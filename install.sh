@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -eu
-(set -o pipefail) 2>/dev/null && set -o pipefail
+set -o pipefail 2>/dev/null || true
 
 SCRIPT_URL="https://raw.githubusercontent.com/cosmaut/bbr/main/bbr.sh"
 INSTALL_PATH="/usr/local/bin/bbr"
 
 echo -e "\033[1;32mInstalling bbr command...\033[0m"
 
-curl -fsSL "$SCRIPT_URL" -o "$INSTALL_PATH"
+curl -fsSL "$SCRIPT_URL" | tr -d '\r' > "$INSTALL_PATH"
 chmod +x "$INSTALL_PATH"
 
 echo -e "\033[1;32mInstall successfully!\033[0m"
