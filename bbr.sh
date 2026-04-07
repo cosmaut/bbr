@@ -151,8 +151,28 @@ t() {
         en:menu_uninstall) echo "Uninstall (try to restore settings)" ;;
         zh:menu_help) echo "帮助" ;;
         en:menu_help) echo "Help" ;;
+        zh:menu_language) echo "设置语言" ;;
+        en:menu_language) echo "Language" ;;
         zh:menu_exit) echo "退出" ;;
         en:menu_exit) echo "Exit" ;;
+        zh:language_title) echo "语言设置" ;;
+        en:language_title) echo "Language Settings" ;;
+        zh:language_current) echo "当前语言: %s" ;;
+        en:language_current) echo "Current language: %s" ;;
+        zh:language_option_zh) echo "中文" ;;
+        en:language_option_zh) echo "Chinese" ;;
+        zh:language_option_en) echo "英文" ;;
+        en:language_option_en) echo "English" ;;
+        zh:language_prompt) echo "请选择语言（仅对当前会话生效）: " ;;
+        en:language_prompt) echo "Select language (session-only): " ;;
+        zh:language_set_zh) echo "已切换为中文。" ;;
+        en:language_set_zh) echo "Switched to Chinese." ;;
+        zh:language_set_en) echo "已切换为英文。" ;;
+        en:language_set_en) echo "Switched to English." ;;
+        zh:language_cancel) echo "已取消。" ;;
+        en:language_cancel) echo "Cancelled." ;;
+        zh:language_invalid) echo "无效选项。" ;;
+        en:language_invalid) echo "Invalid option." ;;
 
         zh:invalid_option) echo "无效选项，请重新选择。" ;;
         en:invalid_option) echo "Invalid option. Please select again." ;;
@@ -170,6 +190,40 @@ tf() {
 }
 
 detect_language
+
+set_language_menu() {
+    local choice current_label
+    current_label="$(t language_option_en)"
+    if [[ "${LANG_MODE}" == "zh" ]]; then
+        current_label="$(t language_option_zh)"
+    fi
+    echo "=============================="
+    echo "       $(t language_title)"
+    echo "=============================="
+    echo "$(tf language_current "${current_label}")"
+    echo "1. $(t language_option_zh)"
+    echo "2. $(t language_option_en)"
+    echo "0. $(t menu_exit)"
+    read -r -p "$(t language_prompt)" choice
+    case "${choice}" in
+        1)
+            LANG_MODE="zh"
+            export BBR_LANG="zh"
+            log_info "$(t language_set_zh)"
+            ;;
+        2)
+            LANG_MODE="en"
+            export BBR_LANG="en"
+            log_info "$(t language_set_en)"
+            ;;
+        0)
+            log_info "$(t language_cancel)"
+            ;;
+        *)
+            log_error "$(t language_invalid)"
+            ;;
+    esac
+}
 
 # 中文说明：输出信息日志。
 log_info() {
@@ -606,7 +660,8 @@ show_menu() {
         echo "4. $(t menu_diagnose)"
         echo "5. $(t menu_ss)"
         echo "6. $(t menu_uninstall)"
-        echo "7. $(t menu_help)"
+        echo "7. $(t menu_language)"
+        echo "8. $(t menu_help)"
         echo "0. $(t menu_exit)"
         read -r -p "$(t menu_prompt)" choice
 
@@ -636,6 +691,10 @@ show_menu() {
                 pause_return
                 ;;
             7)
+                set_language_menu
+                pause_return
+                ;;
+            8)
                 show_help
                 pause_return
                 ;;
