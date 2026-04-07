@@ -46,6 +46,22 @@ sudo bbr disable
 sudo bbr menu
 ```
 
+## 卸载
+
+卸载前建议先关闭 BBR 并恢复原始设置：
+
+```bash
+sudo bbr disable
+```
+
+移除已安装的全局命令与脚本写入的 sysctl 配置，并重载系统参数：
+
+```bash
+sudo rm -f /usr/local/bin/bbr
+sudo rm -f /etc/sysctl.d/99-bbr-standalone.conf
+sudo sysctl --system
+```
+
 ## 系统要求
 
 - Linux 内核版本 ≥ 4.9
@@ -71,4 +87,3 @@ sysctl net.ipv4.tcp_congestion_control
 ```bash
 sysctl net.ipv4.tcp_available_congestion_control
 ```
-
