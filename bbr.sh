@@ -11,6 +11,166 @@ yellow="\033[0;33m"
 red="\033[0;31m"
 plain="\033[0m"
 
+LANG_MODE=""
+
+detect_language() {
+    local forced locale_value
+    forced="${BBR_LANG:-}"
+    if [[ "${forced}" =~ ^(zh|zh_CN|cn|chinese)$ ]]; then
+        LANG_MODE="zh"
+        return 0
+    fi
+    if [[ "${forced}" =~ ^(en|en_US|english)$ ]]; then
+        LANG_MODE="en"
+        return 0
+    fi
+    locale_value="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
+    if [[ "${locale_value}" == *"zh"* || "${locale_value}" == *"ZH"* ]]; then
+        LANG_MODE="zh"
+        return 0
+    fi
+    LANG_MODE="en"
+    return 0
+}
+
+t() {
+    local key
+    key="${1:?}"
+    case "${LANG_MODE}:${key}" in
+        zh:only_linux) echo "此脚本仅支持 Linux 系统。" ;;
+        en:only_linux) echo "This script supports Linux only." ;;
+
+        zh:require_root) echo "请使用 root 用户或 sudo 执行此脚本。" ;;
+        en:require_root) echo "Please run this script as root or via sudo." ;;
+
+        zh:no_sysctl) echo "未找到 sysctl 命令，无法继续。" ;;
+        en:no_sysctl) echo "sysctl not found; cannot continue." ;;
+
+        zh:status_current_qdisc) echo "当前队列调度算法: %s" ;;
+        en:status_current_qdisc) echo "Current qdisc: %s" ;;
+        zh:status_current_cc) echo "当前拥塞控制算法: %s" ;;
+        en:status_current_cc) echo "Current congestion control: %s" ;;
+        zh:available_cc) echo "系统支持的拥塞控制算法:" ;;
+        en:available_cc) echo "Available congestion control algorithms:" ;;
+
+        zh:bbr_cc_enabled) echo "BBR 拥塞控制已启用。" ;;
+        en:bbr_cc_enabled) echo "BBR congestion control is enabled." ;;
+        zh:bbr_cc_disabled) echo "BBR 拥塞控制未启用。" ;;
+        en:bbr_cc_disabled) echo "BBR congestion control is not enabled." ;;
+
+        zh:bbr_qdisc_optimized) echo "BBR 队列调度已优化（fq/cake/fq_codel）。" ;;
+        en:bbr_qdisc_optimized) echo "BBR qdisc is optimized (fq/cake/fq_codel)." ;;
+        zh:bbr_qdisc_not_optimized) echo "BBR 已启用，但队列调度未优化（建议 fq/cake/fq_codel）。" ;;
+        en:bbr_qdisc_not_optimized) echo "BBR is enabled, but qdisc is not optimized (recommend fq/cake/fq_codel)." ;;
+
+        zh:default_iface) echo "默认路由网卡: %s" ;;
+        en:default_iface) echo "Default route interface: %s" ;;
+        zh:iface_root_qdisc) echo "网卡根队列调度: %s" ;;
+        en:iface_root_qdisc) echo "Interface root qdisc: %s" ;;
+
+        zh:kernel_version) echo "内核版本(major.minor): %s" ;;
+        en:kernel_version) echo "Kernel version (major.minor): %s" ;;
+
+        zh:socket_buf_small) echo "检测到 socket 缓冲上限偏小（rmem_max/wmem_max < 4MB），长 RTT/抖动链路下单流吞吐可能很差。" ;;
+        en:socket_buf_small) echo "Socket buffer limits look small (rmem_max/wmem_max < 4MB); single-flow throughput may be poor on high-RTT/jittery paths." ;;
+
+        zh:bbr_not_optimized_warn) echo "检测到 BBR 未配合 fq/cake/fq_codel，重负载场景下可能更抖或更容易触发上游限速/丢包。" ;;
+        en:bbr_not_optimized_warn) echo "BBR is not paired with fq/cake/fq_codel; performance may be unstable under load or trigger upstream policing/loss more easily." ;;
+
+        zh:ss_summary) echo "ss -tin（ESTAB，最多显示 5 条连接）:" ;;
+        en:ss_summary) echo "ss -tin (ESTAB, showing up to 5 connections):" ;;
+        zh:ss_not_found) echo "未找到 ss 命令（iproute2），无法查看连接状态。" ;;
+        en:ss_not_found) echo "ss not found (iproute2); cannot inspect TCP connections." ;;
+        zh:ss_port_prompt) echo "过滤端口（留空表示全部已建立连接）: " ;;
+        en:ss_port_prompt) echo "Filter by port (empty for all established): " ;;
+        zh:port_invalid) echo "端口无效。" ;;
+        en:port_invalid) echo "Invalid port." ;;
+
+        zh:press_enter) echo "按回车返回菜单..." ;;
+        en:press_enter) echo "Press Enter to return to menu..." ;;
+
+        zh:already_enabled) echo "BBR 已经处于启用状态。" ;;
+        en:already_enabled) echo "BBR is already enabled." ;;
+        zh:bbr_not_supported) echo "当前系统未检测到 bbr 支持，请确认内核版本 ≥ 4.9 且已启用 tcp_bbr。" ;;
+        en:bbr_not_supported) echo "BBR is not supported on this system. Ensure kernel >= 4.9 and tcp_bbr is available." ;;
+        zh:sysctl_reload_failed) echo "系统参数重载失败，请手动检查 sysctl 配置。" ;;
+        en:sysctl_reload_failed) echo "Failed to reload sysctl settings. Please check sysctl configuration manually." ;;
+        zh:iface_mq_warn) echo "检测到网卡 %s 根队列为 %s，脚本不会强制替换。请手动确认队列调度是否适配 BBR。" ;;
+        en:iface_mq_warn) echo "Interface %s has root qdisc %s; not forcing replacement. Please verify qdisc suitability for BBR." ;;
+        zh:iface_set_fq_warn) echo "未能为网卡 %s 设置 root fq，BBR 可能无法获得最佳效果。" ;;
+        en:iface_set_fq_warn) echo "Failed to set root fq on interface %s; BBR may not reach best performance." ;;
+        zh:enable_success) echo "BBR 已成功启用。" ;;
+        en:enable_success) echo "BBR has been enabled successfully." ;;
+        zh:enable_failed) echo "BBR 启用失败，请检查内核是否支持 tcp_bbr。" ;;
+        en:enable_failed) echo "Failed to enable BBR. Please check whether tcp_bbr is supported." ;;
+
+        zh:no_need_disable) echo "未找到脚本配置文件且当前非 BBR，无需关闭。" ;;
+        en:no_need_disable) echo "No script config found and BBR is not enabled; nothing to disable." ;;
+        zh:disable_success) echo "BBR 已关闭，并恢复为非 BBR 拥塞控制。" ;;
+        en:disable_success) echo "BBR has been disabled and reverted to a non-BBR congestion control." ;;
+        zh:disable_failed) echo "关闭 BBR 失败，请手动检查系统配置。" ;;
+        en:disable_failed) echo "Failed to disable BBR. Please check system configuration manually." ;;
+
+        zh:uninstall_done) echo "已卸载完成。" ;;
+        en:uninstall_done) echo "Uninstall completed." ;;
+
+        zh:help_header) echo "用法:" ;;
+        en:help_header) echo "Usage:" ;;
+        zh:help_enable) echo "启用 BBR" ;;
+        en:help_enable) echo "Enable BBR" ;;
+        zh:help_disable) echo "关闭 BBR" ;;
+        en:help_disable) echo "Disable BBR" ;;
+        zh:help_uninstall) echo "卸载脚本（并尝试恢复启用前设置）" ;;
+        en:help_uninstall) echo "Uninstall (and try to restore previous settings)" ;;
+        zh:help_status) echo "查看状态" ;;
+        en:help_status) echo "Show status" ;;
+        zh:help_diagnose) echo "诊断环境（只读输出）" ;;
+        en:help_diagnose) echo "Diagnose environment (read-only output)" ;;
+        zh:help_ss) echo "查看 TCP 连接状态（ss -tin）" ;;
+        en:help_ss) echo "Inspect TCP connections (ss -tin)" ;;
+        zh:help_menu) echo "打开交互菜单" ;;
+        en:help_menu) echo "Open interactive menu" ;;
+        zh:help_help) echo "查看帮助" ;;
+        en:help_help) echo "Show help" ;;
+
+        zh:menu_title) echo "BBR 管理脚本" ;;
+        en:menu_title) echo "BBR Manager" ;;
+        zh:menu_prompt) echo "请选择操作: " ;;
+        en:menu_prompt) echo "Select an option: " ;;
+        zh:menu_enable) echo "启用 BBR" ;;
+        en:menu_enable) echo "Enable BBR" ;;
+        zh:menu_disable) echo "关闭 BBR" ;;
+        en:menu_disable) echo "Disable BBR" ;;
+        zh:menu_status) echo "查看状态" ;;
+        en:menu_status) echo "Show status" ;;
+        zh:menu_diagnose) echo "诊断环境（含 ss -tin 摘要）" ;;
+        en:menu_diagnose) echo "Diagnose (includes ss -tin summary)" ;;
+        zh:menu_ss) echo "查看 TCP 连接（ss -tin）" ;;
+        en:menu_ss) echo "Inspect TCP connections (ss -tin)" ;;
+        zh:menu_uninstall) echo "卸载脚本（尝试恢复设置）" ;;
+        en:menu_uninstall) echo "Uninstall (try to restore settings)" ;;
+        zh:menu_help) echo "帮助" ;;
+        en:menu_help) echo "Help" ;;
+        zh:menu_exit) echo "退出" ;;
+        en:menu_exit) echo "Exit" ;;
+
+        zh:invalid_option) echo "无效选项，请重新选择。" ;;
+        en:invalid_option) echo "Invalid option. Please select again." ;;
+        zh:unknown_command) echo "未知命令: %s" ;;
+        en:unknown_command) echo "Unknown command: %s" ;;
+        *) echo "${key}" ;;
+    esac
+}
+
+tf() {
+    local key
+    key="${1:?}"
+    shift || true
+    printf "$(t "${key}")" "$@"
+}
+
+detect_language
+
 # 中文说明：输出信息日志。
 log_info() {
     echo -e "${green}$1${plain}"
@@ -29,7 +189,7 @@ log_error() {
 # 中文说明：确保脚本运行在 Linux 环境。
 require_linux() {
     if [[ "$(uname -s)" != "Linux" ]]; then
-        log_error "此脚本仅支持 Linux 系统。"
+        log_error "$(t only_linux)"
         exit 1
     fi
 }
@@ -37,7 +197,7 @@ require_linux() {
 # 中文说明：确保使用 root 权限执行，因为需要修改内核网络参数。
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
-        log_error "请使用 root 用户或 sudo 执行此脚本。"
+        log_error "$(t require_root)"
         exit 1
     fi
 }
@@ -45,7 +205,7 @@ require_root() {
 # 中文说明：确保系统安装了 sysctl 命令。
 require_sysctl() {
     if ! command -v sysctl >/dev/null 2>&1; then
-        log_error "未找到 sysctl 命令，无法继续。"
+        log_error "$(t no_sysctl)"
         exit 1
     fi
 }
@@ -134,25 +294,36 @@ is_bbr_supported() {
 
 # 中文说明：检查当前内核是否已经启用 BBR。
 is_bbr_enabled() {
-    local current_qdisc current_congestion primary_iface iface_qdisc
-    current_congestion="$(get_current_congestion)"
-    current_qdisc="$(get_current_qdisc)"
+    [[ "$(get_current_congestion)" == "bbr" ]]
+}
 
-    if [[ "${current_congestion}" != "bbr" ]]; then
+is_bbr_optimized() {
+    local current_qdisc primary_iface iface_qdisc
+    if ! is_bbr_enabled; then
         return 1
     fi
+    current_qdisc="$(get_current_qdisc)"
     primary_iface="$(get_primary_interface 2>/dev/null || true)"
     if [[ -n "${primary_iface}" ]] && require_command tc; then
         iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
-        if [[ -n "${iface_qdisc}" ]] && [[ "${iface_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]; then
-            return 0
-        fi
-        return 1
+        [[ -n "${iface_qdisc}" ]] && [[ "${iface_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]
+        return $?
     fi
-    if [[ "${current_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]; then
+    [[ "${current_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]
+}
+
+get_kernel_major_minor() {
+    local release version major minor
+    release="$(uname -r 2>/dev/null || true)"
+    version="${release%%-*}"
+    major="${version%%.*}"
+    minor="${version#*.}"
+    minor="${minor%%.*}"
+    if [[ "${major}" =~ ^[0-9]+$ ]] && [[ "${minor}" =~ ^[0-9]+$ ]]; then
+        echo "${major}.${minor}"
         return 0
     fi
-    return 0
+    return 1
 }
 
 # 中文说明：应用 sysctl 配置，优先使用 --system，失败时退回 -p。
@@ -174,39 +345,124 @@ show_status() {
     current_qdisc="$(get_current_qdisc)"
     current_congestion="$(get_current_congestion)"
 
-    echo "当前队列调度算法: ${current_qdisc}"
-    echo "当前拥塞控制算法: ${current_congestion}"
+    echo "$(tf status_current_qdisc "${current_qdisc}")"
+    echo "$(tf status_current_cc "${current_congestion}")"
 
     if sysctl net.ipv4.tcp_available_congestion_control >/dev/null 2>&1; then
-        echo "系统支持的拥塞控制算法:"
+        echo "$(t available_cc)"
         sysctl -n net.ipv4.tcp_available_congestion_control
     fi
 
     if is_bbr_enabled; then
-        log_info "BBR 当前已启用。"
+        log_info "$(t bbr_cc_enabled)"
+        if is_bbr_optimized; then
+            log_info "$(t bbr_qdisc_optimized)"
+        else
+            log_warn "$(t bbr_qdisc_not_optimized)"
+        fi
     else
-        log_warn "BBR 当前未启用。"
+        log_warn "$(t bbr_cc_disabled)"
     fi
 
     if require_command ip; then
         local primary_iface iface_qdisc
         primary_iface="$(get_primary_interface 2>/dev/null || true)"
         if [[ -n "${primary_iface}" ]]; then
-            echo "默认路由网卡: ${primary_iface}"
+            echo "$(tf default_iface "${primary_iface}")"
             if require_command tc; then
                 iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
-                [[ -n "${iface_qdisc}" ]] && echo "网卡根队列调度: ${iface_qdisc}"
+                [[ -n "${iface_qdisc}" ]] && echo "$(tf iface_root_qdisc "${iface_qdisc}")"
             fi
         fi
     fi
+}
+
+diagnose() {
+    local kernel_version primary_iface iface_qdisc rmem_max wmem_max
+    kernel_version="$(get_kernel_major_minor 2>/dev/null || true)"
+    [[ -n "${kernel_version}" ]] && echo "$(tf kernel_version "${kernel_version}")"
+
+    echo "net.ipv4.tcp_congestion_control: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+    echo "net.core.default_qdisc: $(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+    echo "net.ipv4.tcp_window_scaling: $(sysctl -n net.ipv4.tcp_window_scaling 2>/dev/null || true)"
+    echo "net.ipv4.tcp_mtu_probing: $(sysctl -n net.ipv4.tcp_mtu_probing 2>/dev/null || true)"
+    echo "net.ipv4.tcp_rmem: $(sysctl -n net.ipv4.tcp_rmem 2>/dev/null || true)"
+    echo "net.ipv4.tcp_wmem: $(sysctl -n net.ipv4.tcp_wmem 2>/dev/null || true)"
+    echo "net.core.rmem_max: $(sysctl -n net.core.rmem_max 2>/dev/null || true)"
+    echo "net.core.wmem_max: $(sysctl -n net.core.wmem_max 2>/dev/null || true)"
+
+    primary_iface="$(get_primary_interface 2>/dev/null || true)"
+    if [[ -n "${primary_iface}" ]]; then
+        echo "$(tf default_iface "${primary_iface}")"
+        if require_command tc; then
+            iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
+            [[ -n "${iface_qdisc}" ]] && echo "$(tf iface_root_qdisc "${iface_qdisc}")"
+            tc -s qdisc show dev "${primary_iface}" 2>/dev/null || true
+        fi
+    fi
+
+    rmem_max="$(sysctl -n net.core.rmem_max 2>/dev/null || true)"
+    wmem_max="$(sysctl -n net.core.wmem_max 2>/dev/null || true)"
+    if [[ "${rmem_max}" =~ ^[0-9]+$ ]] && [[ "${wmem_max}" =~ ^[0-9]+$ ]]; then
+        if (( rmem_max < 4194304 || wmem_max < 4194304 )); then
+            log_warn "$(t socket_buf_small)"
+        fi
+    fi
+    if is_bbr_enabled && ! is_bbr_optimized; then
+        log_warn "$(t bbr_not_optimized_warn)"
+    fi
+
+    if require_command ss; then
+        echo "$(t ss_summary)"
+        ss -tin state established 2>/dev/null | head -n 20 || true
+    fi
+}
+
+show_ss_tin() {
+    local port port_pattern line1 line2 printed
+    if ! require_command ss; then
+        log_error "$(t ss_not_found)"
+        return 1
+    fi
+
+    read -r -p "$(t ss_port_prompt)" port
+    if [[ -z "${port}" ]]; then
+        ss -tin state established 2>/dev/null | head -n 60 || true
+        return 0
+    fi
+
+    if ! [[ "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+        log_error "$(t port_invalid)"
+        return 1
+    fi
+
+    port_pattern=":${port}"
+    printed=0
+    ss -tin state established 2>/dev/null | awk -v p="${port_pattern}" '
+        function print_pair(a, b) { print a; print b; }
+        {
+            line1=$0
+            if (getline line2 <= 0) exit
+            if (index(line1, p) || index(line2, p)) {
+                print_pair(line1, line2)
+                printed++
+                if (printed >= 10) exit
+            }
+        }
+        END { if (printed == 0) exit 2 }
+    ' || true
+}
+
+pause_return() {
+    read -r -p "$(t press_enter)" _
 }
 
 # 中文说明：启用 BBR，并记录启用前的原始设置，方便后续恢复。
 enable_bbr() {
     local current_qdisc current_congestion primary_iface iface_qdisc
 
-    if is_bbr_enabled; then
-        log_info "BBR 已经处于启用状态。"
+    if is_bbr_enabled && is_bbr_optimized && [[ -f "${CONFIG_FILE}" ]]; then
+        log_info "$(t already_enabled)"
         return 0
     fi
 
@@ -219,7 +475,7 @@ enable_bbr() {
     fi
 
     if ! is_bbr_supported; then
-        log_error "当前系统未检测到 bbr 支持，请确认内核版本 ≥ 4.9 且已启用 tcp_bbr。"
+        log_error "$(t bbr_not_supported)"
         return 1
     fi
 
@@ -234,7 +490,7 @@ enable_bbr() {
     } > "${CONFIG_FILE}"
 
     if ! reload_sysctl; then
-        log_error "系统参数重载失败，请手动检查 sysctl 配置。"
+        log_error "$(t sysctl_reload_failed)"
         return 1
     fi
 
@@ -243,20 +499,20 @@ enable_bbr() {
 
     if [[ -n "${primary_iface}" ]] && require_command tc; then
         if [[ "${iface_qdisc}" =~ ^(mq|noqueue)$ ]]; then
-            log_warn "检测到网卡 ${primary_iface} 根队列为 ${iface_qdisc}，脚本不会强制替换。请手动确认队列调度是否适配 BBR。"
+            log_warn "$(tf iface_mq_warn "${primary_iface}" "${iface_qdisc}")"
         else
             if ! tc qdisc replace dev "${primary_iface}" root fq >/dev/null 2>&1; then
-                log_warn "未能为网卡 ${primary_iface} 设置 root fq，BBR 可能无法获得最佳效果。"
+                log_warn "$(tf iface_set_fq_warn "${primary_iface}")"
             fi
         fi
     fi
 
     if [[ "$(get_current_congestion)" == "bbr" ]]; then
-        log_info "BBR 已成功启用。"
+        log_info "$(t enable_success)"
         return 0
     fi
 
-    log_error "BBR 启用失败，请检查内核是否支持 tcp_bbr。"
+    log_error "$(t enable_failed)"
     return 1
 }
 
@@ -295,18 +551,18 @@ disable_bbr() {
         fi
     else
         if [[ "${current_congestion}" != "bbr" ]]; then
-            log_warn "未找到脚本配置文件且当前非 BBR，无需关闭。"
+            log_warn "$(t no_need_disable)"
             return 0
         fi
         sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || true
     fi
 
     if [[ "$(get_current_congestion)" != "bbr" ]]; then
-        log_info "BBR 已关闭，并恢复为非 BBR 拥塞控制。"
+        log_info "$(t disable_success)"
         return 0
     fi
 
-    log_error "关闭 BBR 失败，请手动检查系统配置。"
+    log_error "$(t disable_failed)"
     return 1
 }
 
@@ -320,51 +576,77 @@ uninstall_bbr() {
     if [[ -f "${INSTALL_PATH}" ]]; then
         rm -f "${INSTALL_PATH}" || true
     fi
-    log_info "已卸载完成。"
+    log_info "$(t uninstall_done)"
 }
 
 # 中文说明：显示脚本帮助信息。
 show_help() {
-    cat <<'EOF'
-用法:
-  sudo bash bbr.sh enable    启用 BBR
-  sudo bash bbr.sh disable   关闭 BBR
-  sudo bash bbr.sh uninstall 卸载脚本（并尝试恢复启用前设置）
-  sudo bash bbr.sh status    查看状态
-  sudo bash bbr.sh menu      打开交互菜单
-  sudo bash bbr.sh help      查看帮助
-EOF
+    echo "$(t help_header)"
+    echo "  sudo bash bbr.sh enable    $(t help_enable)"
+    echo "  sudo bash bbr.sh disable   $(t help_disable)"
+    echo "  sudo bash bbr.sh uninstall $(t help_uninstall)"
+    echo "  sudo bash bbr.sh status    $(t help_status)"
+    echo "  sudo bash bbr.sh diagnose  $(t help_diagnose)"
+    echo "  sudo bash bbr.sh ss        $(t help_ss)"
+    echo "  sudo bash bbr.sh menu      $(t help_menu)"
+    echo "  sudo bash bbr.sh help      $(t help_help)"
 }
 
 # 中文说明：提供简单的交互菜单，便于直接执行。
 show_menu() {
-    echo "=============================="
-    echo "       BBR 管理脚本"
-    echo "=============================="
-    echo "1. 启用 BBR"
-    echo "2. 关闭 BBR"
-    echo "3. 查看状态"
-    echo "0. 退出"
-    read -r -p "请选择操作: " choice
+    local choice
+    while true; do
+        echo "=============================="
+        echo "       $(t menu_title)"
+        echo "=============================="
+        echo "1. $(t menu_enable)"
+        echo "2. $(t menu_disable)"
+        echo "3. $(t menu_status)"
+        echo "4. $(t menu_diagnose)"
+        echo "5. $(t menu_ss)"
+        echo "6. $(t menu_uninstall)"
+        echo "7. $(t menu_help)"
+        echo "0. $(t menu_exit)"
+        read -r -p "$(t menu_prompt)" choice
 
-    case "${choice}" in
-        1)
-            enable_bbr
-            ;;
-        2)
-            disable_bbr
-            ;;
-        3)
-            show_status
-            ;;
-        0)
-            exit 0
-            ;;
-        *)
-            log_error "无效选项，请重新执行脚本。"
-            exit 1
-            ;;
-    esac
+        case "${choice}" in
+            1)
+                enable_bbr || true
+                pause_return
+                ;;
+            2)
+                disable_bbr || true
+                pause_return
+                ;;
+            3)
+                show_status
+                pause_return
+                ;;
+            4)
+                diagnose
+                pause_return
+                ;;
+            5)
+                show_ss_tin
+                pause_return
+                ;;
+            6)
+                uninstall_bbr
+                pause_return
+                ;;
+            7)
+                show_help
+                pause_return
+                ;;
+            0)
+                exit 0
+                ;;
+            *)
+                log_error "$(t invalid_option)"
+                pause_return
+                ;;
+        esac
+    done
 }
 
 main() {
@@ -387,6 +669,12 @@ main() {
         status)
             show_status
             ;;
+        diagnose)
+            diagnose
+            ;;
+        ss)
+            show_ss_tin
+            ;;
         menu)
             require_root
             show_menu
@@ -395,7 +683,7 @@ main() {
             show_help
             ;;
         *)
-            log_error "未知命令: ${1}"
+            log_error "$(tf unknown_command "${1}")"
             show_help
             exit 1
             ;;
