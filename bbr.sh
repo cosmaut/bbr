@@ -582,6 +582,7 @@ uninstall_bbr() {
 # 中文说明：显示脚本帮助信息。
 show_help() {
     echo "$(t help_header)"
+    echo "  sudo bbr               $(t help_menu)"
     echo "  sudo bash bbr.sh enable    $(t help_enable)"
     echo "  sudo bash bbr.sh disable   $(t help_disable)"
     echo "  sudo bash bbr.sh uninstall $(t help_uninstall)"
