@@ -59,7 +59,6 @@ sudo bbr disable
 ```bash
 sudo rm -f /usr/local/bin/bbr
 sudo rm -f /etc/sysctl.d/99-bbr-standalone.conf
-sudo sysctl --system
 ```
 
 ## 系统要求
