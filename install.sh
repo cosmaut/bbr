@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eu
+(set -o pipefail) 2>/dev/null && set -o pipefail
 
 SCRIPT_URL="https://raw.githubusercontent.com/cosmaut/bbr/main/bbr.sh"
 INSTALL_PATH="/usr/local/bin/bbr"
