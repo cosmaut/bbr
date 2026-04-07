@@ -4,6 +4,7 @@ set -euo pipefail
 
 CONFIG_FILE="/etc/sysctl.d/99-bbr-standalone.conf"
 SYSCTL_CONF="/etc/sysctl.conf"
+INSTALL_PATH="/usr/local/bin/bbr"
 
 green="\033[0;32m"
 yellow="\033[0;33m"
@@ -285,7 +286,6 @@ disable_bbr() {
         [[ -z "${old_congestion}" ]] && old_congestion="cubic"
 
         rm -f "${CONFIG_FILE}"
-        reload_sysctl || true
 
         sysctl -w "net.core.default_qdisc=${old_qdisc}" >/dev/null 2>&1 || true
         sysctl -w "net.ipv4.tcp_congestion_control=${old_congestion}" >/dev/null 2>&1 || true
@@ -299,7 +299,6 @@ disable_bbr() {
             return 0
         fi
         sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || true
-        reload_sysctl || true
     fi
 
     if [[ "$(get_current_congestion)" != "bbr" ]]; then
@@ -311,12 +310,26 @@ disable_bbr() {
     return 1
 }
 
+uninstall_bbr() {
+    local current_congestion
+    current_congestion="$(get_current_congestion)"
+    if [[ -f "${CONFIG_FILE}" || "${current_congestion}" == "bbr" ]]; then
+        disable_bbr || true
+    fi
+    rm -f "${CONFIG_FILE}" || true
+    if [[ -f "${INSTALL_PATH}" ]]; then
+        rm -f "${INSTALL_PATH}" || true
+    fi
+    log_info "已卸载完成。"
+}
+
 # 中文说明：显示脚本帮助信息。
 show_help() {
     cat <<'EOF'
 用法:
   sudo bash bbr.sh enable    启用 BBR
   sudo bash bbr.sh disable   关闭 BBR
+  sudo bash bbr.sh uninstall 卸载脚本（并尝试恢复启用前设置）
   sudo bash bbr.sh status    查看状态
   sudo bash bbr.sh menu      打开交互菜单
   sudo bash bbr.sh help      查看帮助
@@ -366,6 +379,10 @@ main() {
         disable)
             require_root
             disable_bbr
+            ;;
+        uninstall)
+            require_root
+            uninstall_bbr
             ;;
         status)
             show_status
