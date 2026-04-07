@@ -51,6 +51,9 @@ sudo bbr uninstall  # 卸载脚本（尝试恢复设置）
 
 ```bash
 sudo BBR_LANG=zh bbr status   # 指定中文
+```
+
+```bash
 sudo BBR_LANG=en bbr status   # 指定英文
 ```
 
