@@ -261,12 +261,9 @@ enable_bbr() {
 
 # 中文说明：关闭 BBR，优先恢复脚本保存的原始值；如果没有备份，则回退到常见默认值。
 disable_bbr() {
-    local old_qdisc old_congestion old_iface old_iface_qdisc
+    local old_qdisc old_congestion old_iface old_iface_qdisc legacy_settings legacy_qdisc legacy_congestion current_congestion
 
-    if ! is_bbr_enabled; then
-        log_warn "BBR 当前未启用，无需关闭。"
-        return 0
-    fi
+    current_congestion="$(get_current_congestion)"
 
     if [[ -f "${CONFIG_FILE}" ]]; then
         old_qdisc="$(grep -E '^#backup default_qdisc=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
@@ -274,16 +271,34 @@ disable_bbr() {
         old_iface="$(grep -E '^#backup iface=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
         old_iface_qdisc="$(grep -E '^#backup iface_qdisc=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
 
+        if [[ -z "${old_qdisc}" || -z "${old_congestion}" ]]; then
+            legacy_settings="$(head -n 1 "${CONFIG_FILE}" 2>/dev/null | tr -d '# ' || true)"
+            if [[ -n "${legacy_settings}" && "${legacy_settings}" == *:* ]]; then
+                legacy_qdisc="${legacy_settings%:*}"
+                legacy_congestion="${legacy_settings#*:}"
+                [[ -z "${old_qdisc}" ]] && old_qdisc="${legacy_qdisc}"
+                [[ -z "${old_congestion}" ]] && old_congestion="${legacy_congestion}"
+            fi
+        fi
+
+        [[ -z "${old_qdisc}" ]] && old_qdisc="pfifo_fast"
+        [[ -z "${old_congestion}" ]] && old_congestion="cubic"
+
         rm -f "${CONFIG_FILE}"
         reload_sysctl || true
 
-        [[ -n "${old_qdisc}" ]] && sysctl -w "net.core.default_qdisc=${old_qdisc}" >/dev/null 2>&1 || true
-        [[ -n "${old_congestion}" ]] && sysctl -w "net.ipv4.tcp_congestion_control=${old_congestion}" >/dev/null 2>&1 || true
+        sysctl -w "net.core.default_qdisc=${old_qdisc}" >/dev/null 2>&1 || true
+        sysctl -w "net.ipv4.tcp_congestion_control=${old_congestion}" >/dev/null 2>&1 || true
 
         if [[ -n "${old_iface}" && -n "${old_iface_qdisc}" ]] && require_command tc; then
             tc qdisc replace dev "${old_iface}" root "${old_iface_qdisc}" >/dev/null 2>&1 || true
         fi
     else
+        if [[ "${current_congestion}" != "bbr" ]]; then
+            log_warn "未找到脚本配置文件且当前非 BBR，无需关闭。"
+            return 0
+        fi
+        sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || true
         reload_sysctl || true
     fi
 
