@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -u
+set -euo pipefail
 
 CONFIG_FILE="/etc/sysctl.d/99-bbr-standalone.conf"
 SYSCTL_CONF="/etc/sysctl.conf"
@@ -49,6 +49,15 @@ require_sysctl() {
     fi
 }
 
+require_command() {
+    local command_name
+    command_name="${1:?}"
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
+
 # 中文说明：读取当前队列调度算法，如果读取失败则返回默认值。
 get_current_qdisc() {
     local value
@@ -69,17 +78,80 @@ get_current_congestion() {
     echo "${value}"
 }
 
-# 中文说明：检查当前内核是否已经启用 BBR。
-is_bbr_enabled() {
-    local current_qdisc current_congestion
-    current_qdisc="$(get_current_qdisc)"
-    current_congestion="$(get_current_congestion)"
+get_primary_interface() {
+    local line prev token
+    if ! require_command ip; then
+        return 1
+    fi
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        set -- ${line}
+        prev=""
+        for token in "$@"; do
+            if [[ "${prev}" == "dev" ]]; then
+                echo "${token}"
+                return 0
+            fi
+            prev="${token}"
+        done
+    done < <(ip route show default 2>/dev/null || true)
+    return 1
+}
 
-    if [[ "${current_congestion}" == "bbr" ]] && [[ "${current_qdisc}" =~ ^(fq|cake)$ ]]; then
+get_interface_root_qdisc() {
+    local iface first_line token prev
+    iface="${1:?}"
+    if ! require_command tc; then
+        return 1
+    fi
+    first_line="$(tc qdisc show dev "${iface}" 2>/dev/null | head -n 1 || true)"
+    [[ -z "${first_line}" ]] && return 1
+    set -- ${first_line}
+    prev=""
+    for token in "$@"; do
+        if [[ "${prev}" == "qdisc" ]]; then
+            echo "${token}"
+            return 0
+        fi
+        prev="${token}"
+    done
+    return 1
+}
+
+is_bbr_supported() {
+    local algorithms
+    algorithms="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+    if [[ " ${algorithms} " == *" bbr "* ]]; then
         return 0
     fi
+    if require_command modprobe; then
+        modprobe tcp_bbr >/dev/null 2>&1 || true
+    fi
+    algorithms="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
+    [[ " ${algorithms} " == *" bbr "* ]]
+}
 
-    return 1
+# 中文说明：检查当前内核是否已经启用 BBR。
+is_bbr_enabled() {
+    local current_qdisc current_congestion primary_iface iface_qdisc
+    current_congestion="$(get_current_congestion)"
+    current_qdisc="$(get_current_qdisc)"
+
+    if [[ "${current_congestion}" != "bbr" ]]; then
+        return 1
+    fi
+    primary_iface="$(get_primary_interface 2>/dev/null || true)"
+    if [[ -n "${primary_iface}" ]] && require_command tc; then
+        iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
+        if [[ -n "${iface_qdisc}" ]] && [[ "${iface_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]; then
+            return 0
+        fi
+        return 1
+    fi
+    if [[ "${current_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]; then
+        return 0
+    fi
+    return 0
 }
 
 # 中文说明：应用 sysctl 配置，优先使用 --system，失败时退回 -p。
@@ -114,11 +186,23 @@ show_status() {
     else
         log_warn "BBR 当前未启用。"
     fi
+
+    if require_command ip; then
+        local primary_iface iface_qdisc
+        primary_iface="$(get_primary_interface 2>/dev/null || true)"
+        if [[ -n "${primary_iface}" ]]; then
+            echo "默认路由网卡: ${primary_iface}"
+            if require_command tc; then
+                iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
+                [[ -n "${iface_qdisc}" ]] && echo "网卡根队列调度: ${iface_qdisc}"
+            fi
+        fi
+    fi
 }
 
 # 中文说明：启用 BBR，并记录启用前的原始设置，方便后续恢复。
 enable_bbr() {
-    local current_qdisc current_congestion
+    local current_qdisc current_congestion primary_iface iface_qdisc
 
     if is_bbr_enabled; then
         log_info "BBR 已经处于启用状态。"
@@ -127,22 +211,43 @@ enable_bbr() {
 
     current_qdisc="$(get_current_qdisc)"
     current_congestion="$(get_current_congestion)"
+    primary_iface="$(get_primary_interface 2>/dev/null || true)"
+    iface_qdisc=""
+    if [[ -n "${primary_iface}" ]] && require_command tc; then
+        iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
+    fi
+
+    if ! is_bbr_supported; then
+        log_error "当前系统未检测到 bbr 支持，请确认内核版本 ≥ 4.9 且已启用 tcp_bbr。"
+        return 1
+    fi
 
     mkdir -p "$(dirname "${CONFIG_FILE}")"
     {
-        echo "#${current_qdisc}:${current_congestion}"
+        echo "#backup default_qdisc=${current_qdisc}"
+        echo "#backup congestion=${current_congestion}"
+        [[ -n "${primary_iface}" ]] && echo "#backup iface=${primary_iface}"
+        [[ -n "${iface_qdisc}" ]] && echo "#backup iface_qdisc=${iface_qdisc}"
         echo "net.core.default_qdisc = fq"
         echo "net.ipv4.tcp_congestion_control = bbr"
     } > "${CONFIG_FILE}"
 
-    if [[ -f "${SYSCTL_CONF}" ]]; then
-        sed -i 's/^net.core.default_qdisc/# &/' "${SYSCTL_CONF}"
-        sed -i 's/^net.ipv4.tcp_congestion_control/# &/' "${SYSCTL_CONF}"
-    fi
-
     if ! reload_sysctl; then
         log_error "系统参数重载失败，请手动检查 sysctl 配置。"
         return 1
+    fi
+
+    sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+
+    if [[ -n "${primary_iface}" ]] && require_command tc; then
+        if [[ "${iface_qdisc}" =~ ^(mq|noqueue)$ ]]; then
+            log_warn "检测到网卡 ${primary_iface} 根队列为 ${iface_qdisc}，脚本不会强制替换。请手动确认队列调度是否适配 BBR。"
+        else
+            if ! tc qdisc replace dev "${primary_iface}" root fq >/dev/null 2>&1; then
+                log_warn "未能为网卡 ${primary_iface} 设置 root fq，BBR 可能无法获得最佳效果。"
+            fi
+        fi
     fi
 
     if [[ "$(get_current_congestion)" == "bbr" ]]; then
@@ -156,7 +261,7 @@ enable_bbr() {
 
 # 中文说明：关闭 BBR，优先恢复脚本保存的原始值；如果没有备份，则回退到常见默认值。
 disable_bbr() {
-    local old_settings old_qdisc old_congestion
+    local old_qdisc old_congestion old_iface old_iface_qdisc
 
     if ! is_bbr_enabled; then
         log_warn "BBR 当前未启用，无需关闭。"
@@ -164,28 +269,22 @@ disable_bbr() {
     fi
 
     if [[ -f "${CONFIG_FILE}" ]]; then
-        old_settings="$(head -n 1 "${CONFIG_FILE}" | tr -d '#')"
-        old_qdisc="${old_settings%:*}"
-        old_congestion="${old_settings#*:}"
+        old_qdisc="$(grep -E '^#backup default_qdisc=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
+        old_congestion="$(grep -E '^#backup congestion=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
+        old_iface="$(grep -E '^#backup iface=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
+        old_iface_qdisc="$(grep -E '^#backup iface_qdisc=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
 
-        if [[ -z "${old_qdisc}" || "${old_qdisc}" == "${old_settings}" ]]; then
-            old_qdisc="pfifo_fast"
-        fi
-
-        if [[ -z "${old_congestion}" || "${old_congestion}" == "${old_settings}" ]]; then
-            old_congestion="cubic"
-        fi
-
-        sysctl -w "net.core.default_qdisc=${old_qdisc}" >/dev/null 2>&1 || true
-        sysctl -w "net.ipv4.tcp_congestion_control=${old_congestion}" >/dev/null 2>&1 || true
         rm -f "${CONFIG_FILE}"
         reload_sysctl || true
-    else
-        if [[ -f "${SYSCTL_CONF}" ]]; then
-            sed -i 's/net.core.default_qdisc=fq/net.core.default_qdisc=pfifo_fast/' "${SYSCTL_CONF}"
-            sed -i 's/net.ipv4.tcp_congestion_control=bbr/net.ipv4.tcp_congestion_control=cubic/' "${SYSCTL_CONF}"
-            reload_sysctl || true
+
+        [[ -n "${old_qdisc}" ]] && sysctl -w "net.core.default_qdisc=${old_qdisc}" >/dev/null 2>&1 || true
+        [[ -n "${old_congestion}" ]] && sysctl -w "net.ipv4.tcp_congestion_control=${old_congestion}" >/dev/null 2>&1 || true
+
+        if [[ -n "${old_iface}" && -n "${old_iface_qdisc}" ]] && require_command tc; then
+            tc qdisc replace dev "${old_iface}" root "${old_iface_qdisc}" >/dev/null 2>&1 || true
         fi
+    else
+        reload_sysctl || true
     fi
 
     if [[ "$(get_current_congestion)" != "bbr" ]]; then
