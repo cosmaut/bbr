@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/cosmaut/bbr/main/install.sh | tr -d
 打开交互菜单（推荐）：
 
 ```bash
-sudo bbr
+sudo bbr   # 打开交互菜单
 ```
 
 命令一览：
@@ -50,8 +50,8 @@ sudo bbr uninstall  # 卸载脚本（尝试恢复设置）
 也支持通过环境变量强制指定：
 
 ```bash
-sudo BBR_LANG=zh bbr status
-sudo BBR_LANG=en bbr status
+sudo BBR_LANG=zh bbr status   # 指定中文
+sudo BBR_LANG=en bbr status   # 指定英文
 ```
 
 交互菜单也支持在运行时切换语言（仅对当前会话生效）。
@@ -86,9 +86,10 @@ sudo rm -f /etc/sysctl.d/99-bbr-standalone.conf
 
 ## 工作原理（简述）
 
-- 启用时：设置 `net.ipv4.tcp_congestion_control=bbr`，并建议使用 `net.core.default_qdisc=fq`
+- 启用时：设置 `net.ipv4.tcp_congestion_control=bbr`，并使用 `net.core.default_qdisc=fq`
 - 为保证重启不失效：写入 sysctl 配置文件并执行 sysctl 重载
 - 为保证可恢复：启用前会备份旧值，关闭时优先恢复备份
+- BBR 配合 `fq` 队列调度以获得更好的 pacing；否则可能回退到 TCP 栈内部 pacing（资源开销更高）
 
 ## 常见检查
 
