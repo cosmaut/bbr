@@ -46,6 +46,20 @@ sudo bbr disable
 sudo bbr menu
 ```
 
+## 语言
+
+脚本会根据系统语言环境自动选择输出语言：
+
+- 若 `LANG/LC_ALL/LC_MESSAGES` 包含 `zh`，默认显示中文
+- 否则默认显示英文
+
+也支持通过环境变量强制指定：
+
+```bash
+sudo BBR_LANG=zh bbr status
+sudo BBR_LANG=en bbr status
+```
+
 ## 卸载
 
 卸载前建议先关闭 BBR 并恢复原始设置：
