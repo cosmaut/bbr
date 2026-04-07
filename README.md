@@ -28,6 +28,17 @@ curl -fsSL https://raw.githubusercontent.com/cosmaut/bbr/main/install.sh | tr -d
 sudo bbr
 ```
 
+命令一览：
+
+```bash
+sudo bbr enable     # 启用 BBR
+sudo bbr disable    # 关闭 BBR（恢复默认/恢复备份）
+sudo bbr status     # 查看当前状态
+sudo bbr diagnose   # 诊断环境（含队列/缓冲/ss 摘要）
+sudo bbr ss         # 查看 TCP 连接状态（ss -tin，可按端口过滤）
+sudo bbr uninstall  # 卸载脚本（尝试恢复设置）
+```
+
 启用 BBR：
 
 ```bash
@@ -60,6 +71,8 @@ sudo BBR_LANG=zh bbr status
 sudo BBR_LANG=en bbr status
 ```
 
+交互菜单也支持在运行时切换语言（仅对当前会话生效）。
+
 ## 卸载
 
 卸载前建议先关闭 BBR 并恢复原始设置：
@@ -86,6 +99,7 @@ sudo rm -f /etc/sysctl.d/99-bbr-standalone.conf
 - Linux 内核版本 ≥ 4.9
 - 需要 root / sudo 权限
 - 系统已预装 `curl`、`sysctl`
+- 建议安装 `iproute2`（用于 `ss`/`ip`/`tc`，诊断与队列检查会更完整）
 
 ## 工作原理（简述）
 
