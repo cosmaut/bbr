@@ -54,7 +54,13 @@ sudo bbr menu
 sudo bbr disable
 ```
 
-移除已安装的全局命令与脚本写入的 sysctl 配置，并重载系统参数：
+一键卸载（会尝试恢复启用前设置，并移除命令与配置文件）：
+
+```bash
+sudo bbr uninstall
+```
+
+如需手动卸载，可移除已安装的全局命令与脚本写入的 sysctl 配置文件：
 
 ```bash
 sudo rm -f /usr/local/bin/bbr
