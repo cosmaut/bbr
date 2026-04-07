@@ -39,23 +39,6 @@ sudo bbr ss         # 查看 TCP 连接状态（ss -tin，可按端口过滤）
 sudo bbr uninstall  # 卸载脚本（尝试恢复设置）
 ```
 
-启用 BBR：
-
-```bash
-sudo bbr enable
-```
-
-查看 BBR 状态：
-
-```bash
-sudo bbr status
-```
-
-关闭 BBR（恢复默认/恢复备份）：
-
-```bash
-sudo bbr disable
-```
 
 ## 语言
 
