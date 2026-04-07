@@ -22,6 +22,12 @@ curl -fsSL https://raw.githubusercontent.com/cosmaut/bbr/main/install.sh | tr -d
 
 安装完成后，直接运行以下命令：
 
+打开交互菜单（推荐）：
+
+```bash
+sudo bbr
+```
+
 启用 BBR：
 
 ```bash
@@ -38,12 +44,6 @@ sudo bbr status
 
 ```bash
 sudo bbr disable
-```
-
-打开交互菜单：
-
-```bash
-sudo bbr menu
 ```
 
 ## 语言
