@@ -15,7 +15,7 @@
 只需一行命令下载并安装：
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/cosmaut/bbr/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/cosmaut/bbr/main/install.sh | tr -d '\r' | sudo bash
 ```
 
 ## 使用
