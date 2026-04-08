@@ -5,6 +5,8 @@ set -euo pipefail
 CONFIG_FILE="/etc/sysctl.d/99-bbr-standalone.conf"
 SYSCTL_CONF="/etc/sysctl.conf"
 INSTALL_PATH="/usr/local/bin/bbr"
+SYSTEMD_SERVICE_NAME="bbr-qdisc.service"
+SYSTEMD_SERVICE_PATH="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}"
 
 green="\033[0;32m"
 yellow="\033[0;33m"
@@ -113,6 +115,27 @@ t() {
 
         zh:uninstall_done) echo "已卸载完成。" ;;
         en:uninstall_done) echo "Uninstall completed." ;;
+
+        zh:systemd_not_available) echo "未检测到 systemd（或 systemctl 不可用），跳过开机持久化设置。" ;;
+        en:systemd_not_available) echo "systemd not detected (or systemctl not available); skipping boot persistence." ;;
+        zh:systemd_persist_enabled) echo "已启用 systemd 持久化：重启后将自动为默认网卡设置 root fq。" ;;
+        en:systemd_persist_enabled) echo "Enabled systemd persistence: will set root fq on default interface after reboot." ;;
+        zh:systemd_persist_enable_failed) echo "systemd 持久化启用失败，请手动检查 systemd 服务状态。" ;;
+        en:systemd_persist_enable_failed) echo "Failed to enable systemd persistence; please check systemd service status." ;;
+        zh:systemd_persist_removed) echo "已移除 systemd 持久化设置。" ;;
+        en:systemd_persist_removed) echo "Removed systemd persistence." ;;
+        zh:systemd_persist_remove_failed) echo "移除 systemd 持久化设置失败，请手动检查。" ;;
+        en:systemd_persist_remove_failed) echo "Failed to remove systemd persistence; please check manually." ;;
+        zh:apply_qdisc_no_iface) echo "未检测到默认路由网卡，跳过 qdisc 设置。" ;;
+        en:apply_qdisc_no_iface) echo "Default route interface not detected; skipping qdisc setup." ;;
+        zh:apply_qdisc_tc_missing) echo "未找到 tc 命令（iproute2），跳过 qdisc 设置。" ;;
+        en:apply_qdisc_tc_missing) echo "tc not found (iproute2); skipping qdisc setup." ;;
+        zh:apply_qdisc_iface_ok) echo "网卡 %s 根队列调度已是 %s，无需修改。" ;;
+        en:apply_qdisc_iface_ok) echo "Interface %s already has root qdisc %s; no change needed." ;;
+        zh:apply_qdisc_iface_set) echo "已为网卡 %s 设置 root fq。" ;;
+        en:apply_qdisc_iface_set) echo "Set root fq on interface %s." ;;
+        zh:apply_qdisc_iface_set_failed) echo "未能为网卡 %s 设置 root fq（可能被网络管理覆盖或内核不支持）。" ;;
+        en:apply_qdisc_iface_set_failed) echo "Failed to set root fq on interface %s (may be overridden by network manager or unsupported)." ;;
 
         zh:help_header) echo "用法:" ;;
         en:help_header) echo "Usage:" ;;
@@ -270,6 +293,89 @@ require_command() {
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         return 1
     fi
+    return 0
+}
+
+systemd_available() {
+    if ! require_command systemctl; then
+        return 1
+    fi
+    [[ -d /run/systemd/system ]]
+}
+
+get_self_path() {
+    local self_path
+    self_path="${INSTALL_PATH}"
+    if [[ -x "${self_path}" ]]; then
+        echo "${self_path}"
+        return 0
+    fi
+    self_path="${BASH_SOURCE[0]}"
+    if require_command readlink; then
+        self_path="$(readlink -f "${self_path}" 2>/dev/null || true)"
+    fi
+    if [[ -n "${self_path}" ]]; then
+        echo "${self_path}"
+        return 0
+    fi
+    return 1
+}
+
+install_systemd_persistence() {
+    local self_path
+
+    if ! systemd_available; then
+        log_warn "$(t systemd_not_available)"
+        return 0
+    fi
+
+    self_path="$(get_self_path 2>/dev/null || true)"
+    if [[ -z "${self_path}" ]]; then
+        log_warn "$(t systemd_persist_enable_failed)"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "${SYSTEMD_SERVICE_PATH}")"
+
+    cat > "${SYSTEMD_SERVICE_PATH}" <<EOF
+[Unit]
+Description=BBR qdisc persistence (set root fq on default interface)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${self_path} apply-qdisc
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    if systemctl daemon-reload >/dev/null 2>&1 \
+        && systemctl enable --now "${SYSTEMD_SERVICE_NAME}" >/dev/null 2>&1; then
+        log_info "$(t systemd_persist_enabled)"
+        return 0
+    fi
+
+    log_warn "$(t systemd_persist_enable_failed)"
+    return 0
+}
+
+remove_systemd_persistence() {
+    if ! systemd_available; then
+        return 0
+    fi
+
+    systemctl disable --now "${SYSTEMD_SERVICE_NAME}" >/dev/null 2>&1 || true
+    rm -f "${SYSTEMD_SERVICE_PATH}" >/dev/null 2>&1 || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    if [[ ! -f "${SYSTEMD_SERVICE_PATH}" ]]; then
+        log_info "$(t systemd_persist_removed)"
+        return 0
+    fi
+
+    log_warn "$(t systemd_persist_remove_failed)"
     return 0
 }
 
@@ -561,6 +667,8 @@ enable_bbr() {
         fi
     fi
 
+    install_systemd_persistence
+
     if [[ "$(get_current_congestion)" == "bbr" ]]; then
         log_info "$(t enable_success)"
         return 0
@@ -611,6 +719,8 @@ disable_bbr() {
         sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || true
     fi
 
+    remove_systemd_persistence
+
     if [[ "$(get_current_congestion)" != "bbr" ]]; then
         log_info "$(t disable_success)"
         return 0
@@ -631,6 +741,38 @@ uninstall_bbr() {
         rm -f "${INSTALL_PATH}" || true
     fi
     log_info "$(t uninstall_done)"
+}
+
+apply_qdisc() {
+    local primary_iface iface_qdisc
+
+    primary_iface="$(get_primary_interface 2>/dev/null || true)"
+    if [[ -z "${primary_iface}" ]]; then
+        log_warn "$(t apply_qdisc_no_iface)"
+        return 0
+    fi
+    if ! require_command tc; then
+        log_warn "$(t apply_qdisc_tc_missing)"
+        return 0
+    fi
+
+    iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
+    if [[ -n "${iface_qdisc}" ]] && [[ "${iface_qdisc}" == "fq" ]]; then
+        log_info "$(tf apply_qdisc_iface_ok "${primary_iface}" "${iface_qdisc}")"
+        return 0
+    fi
+    if [[ -n "${iface_qdisc}" ]] && [[ "${iface_qdisc}" =~ ^(mq|noqueue)$ ]]; then
+        log_warn "$(tf iface_mq_warn "${primary_iface}" "${iface_qdisc}")"
+        return 0
+    fi
+
+    if tc qdisc replace dev "${primary_iface}" root fq >/dev/null 2>&1; then
+        log_info "$(tf apply_qdisc_iface_set "${primary_iface}")"
+        return 0
+    fi
+
+    log_warn "$(tf apply_qdisc_iface_set_failed "${primary_iface}")"
+    return 0
 }
 
 # 中文说明：显示脚本帮助信息。
@@ -725,6 +867,10 @@ main() {
         uninstall)
             require_root
             uninstall_bbr
+            ;;
+        apply-qdisc)
+            require_root
+            apply_qdisc
             ;;
         status)
             show_status
