@@ -702,6 +702,7 @@ disable_bbr() {
 
         [[ -z "${old_qdisc}" ]] && old_qdisc="pfifo_fast"
         [[ -z "${old_congestion}" ]] && old_congestion="cubic"
+        [[ "${old_congestion}" == "bbr" ]] && old_congestion="cubic"
 
         rm -f "${CONFIG_FILE}"
 
