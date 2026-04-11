@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+VERSION="0.0.1"
+
 CONFIG_FILE="/etc/sysctl.d/99-bbr-standalone.conf"
 SYSCTL_CONF="/etc/sysctl.conf"
 INSTALL_PATH="/usr/local/bin/bbr"
@@ -99,8 +101,10 @@ t() {
         en:sysctl_reload_failed) echo "Failed to reload sysctl settings. Please check sysctl configuration manually." ;;
         zh:iface_mq_warn) echo "检测到网卡 %s 根队列为 %s，脚本不会强制替换。请手动确认队列调度是否适配 BBR。" ;;
         en:iface_mq_warn) echo "Interface %s has root qdisc %s; not forcing replacement. Please verify qdisc suitability for BBR." ;;
-        zh:iface_set_fq_warn) echo "未能为网卡 %s 设置 root fq，BBR 可能无法获得最佳效果。" ;;
-        en:iface_set_fq_warn) echo "Failed to set root fq on interface %s; BBR may not reach best performance." ;;
+        zh:iface_set_fq_warn) echo "未能为网卡 %s 设置 root fq，BBR 已启用但队列调度可能未优化。" ;;
+        en:iface_set_fq_warn) echo "Failed to set root fq on interface %s; BBR is enabled but qdisc may remain unoptimized." ;;
+        zh:iface_set_fq_skipped) echo "网卡 %s 根队列为 %s，跳过 fq 设置以避免网络问题。" ;;
+        en:iface_set_fq_skipped) echo "Interface %s has root qdisc %s; skipping fq setup to avoid network issues." ;;
         zh:enable_success) echo "BBR 已成功启用。" ;;
         en:enable_success) echo "BBR has been enabled successfully." ;;
         zh:enable_failed) echo "BBR 启用失败，请检查内核是否支持 tcp_bbr。" ;;
@@ -155,6 +159,8 @@ t() {
         en:help_menu) echo "Open interactive menu" ;;
         zh:help_help) echo "查看帮助" ;;
         en:help_help) echo "Show help" ;;
+        zh:help_version) echo "查看版本号" ;;
+        en:help_version) echo "Show version" ;;
 
         zh:menu_title) echo "BBR 管理脚本" ;;
         en:menu_title) echo "BBR Manager" ;;
@@ -248,22 +254,18 @@ set_language_menu() {
     esac
 }
 
-# 中文说明：输出信息日志。
 log_info() {
     echo -e "${green}$1${plain}"
 }
 
-# 中文说明：输出警告日志。
 log_warn() {
     echo -e "${yellow}$1${plain}"
 }
 
-# 中文说明：输出错误日志。
 log_error() {
     echo -e "${red}$1${plain}" >&2
 }
 
-# 中文说明：确保脚本运行在 Linux 环境。
 require_linux() {
     if [[ "$(uname -s)" != "Linux" ]]; then
         log_error "$(t only_linux)"
@@ -271,7 +273,6 @@ require_linux() {
     fi
 }
 
-# 中文说明：确保使用 root 权限执行，因为需要修改内核网络参数。
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
         log_error "$(t require_root)"
@@ -279,7 +280,6 @@ require_root() {
     fi
 }
 
-# 中文说明：确保系统安装了 sysctl 命令。
 require_sysctl() {
     if ! command -v sysctl >/dev/null 2>&1; then
         log_error "$(t no_sysctl)"
@@ -321,6 +321,28 @@ get_self_path() {
     return 1
 }
 
+# 验证路径安全性：确保路径是绝对路径且不包含危险字符
+validate_path() {
+    local path="${1:?}"
+    # 检查是否为空
+    if [[ -z "${path}" ]]; then
+        return 1
+    fi
+    # 必须是绝对路径
+    if [[ "${path}" != /* ]]; then
+        return 1
+    fi
+    # 不能包含换行符或其他控制字符（防止注入）
+    if [[ "${path}" =~ [[:cntrl:]] ]]; then
+        return 1
+    fi
+    # 不能包含 | ; $ ` 等 shell 特殊字符
+    if [[ "${path}" =~ [\|\;\$\`\\] ]]; then
+        return 1
+    fi
+    return 0
+}
+
 install_systemd_persistence() {
     local self_path
 
@@ -335,10 +357,16 @@ install_systemd_persistence() {
         return 0
     fi
 
+    # 验证路径安全性
+    if ! validate_path "${self_path}"; then
+        log_warn "$(t systemd_persist_enable_failed)"
+        return 0
+    fi
+
     mkdir -p "$(dirname "${SYSTEMD_SERVICE_PATH}")"
 
-    cat > "${SYSTEMD_SERVICE_PATH}" <<EOF
-[Unit]
+    # 使用 printf 避免 shell 注入
+    printf '%s\n' "[Unit]
 Description=BBR qdisc persistence (set root fq on default interface)
 Wants=network-online.target
 After=network-online.target
@@ -348,8 +376,7 @@ Type=oneshot
 ExecStart=${self_path} apply-qdisc
 
 [Install]
-WantedBy=multi-user.target
-EOF
+WantedBy=multi-user.target" > "${SYSTEMD_SERVICE_PATH}"
 
     if systemctl daemon-reload >/dev/null 2>&1 \
         && systemctl enable --now "${SYSTEMD_SERVICE_NAME}" >/dev/null 2>&1; then
@@ -379,7 +406,6 @@ remove_systemd_persistence() {
     return 0
 }
 
-# 中文说明：读取当前队列调度算法，如果读取失败则返回默认值。
 get_current_qdisc() {
     local value
     value="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
@@ -389,7 +415,6 @@ get_current_qdisc() {
     echo "${value}"
 }
 
-# 中文说明：读取当前拥塞控制算法，如果读取失败则返回默认值。
 get_current_congestion() {
     local value
     value="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
@@ -452,7 +477,6 @@ is_bbr_supported() {
     [[ " ${algorithms} " == *" bbr "* ]]
 }
 
-# 中文说明：检查当前内核是否已经启用 BBR。
 is_bbr_enabled() {
     [[ "$(get_current_congestion)" == "bbr" ]]
 }
@@ -486,7 +510,7 @@ get_kernel_major_minor() {
     return 1
 }
 
-# 中文说明：应用 sysctl 配置，优先使用 --system，失败时退回 -p。
+# 使用原子操作应用 sysctl 配置
 reload_sysctl() {
     if sysctl --system >/dev/null 2>&1; then
         return 0
@@ -499,7 +523,32 @@ reload_sysctl() {
     return 1
 }
 
-# 中文说明：显示当前 BBR 状态与关键内核参数。
+# 原子写入配置文件：先写临时文件，再 mv
+atomic_write_config() {
+    local config_content="${1:?}"
+    local tmp_file
+    tmp_file="$(mktemp "${CONFIG_FILE}.XXXXXX")" || return 1
+
+    # 设置权限（仅 root 可读写）
+    chmod 600 "${tmp_file}" || {
+        rm -f "${tmp_file}"
+        return 1
+    }
+
+    printf '%s\n' "$config_content" > "${tmp_file}" || {
+        rm -f "${tmp_file}"
+        return 1
+    }
+
+    # 原子性地替换目标文件
+    if mv -f "${tmp_file}" "${CONFIG_FILE}"; then
+        return 0
+    else
+        rm -f "${tmp_file}"
+        return 1
+    fi
+}
+
 show_status() {
     local current_qdisc current_congestion
     current_qdisc="$(get_current_qdisc)"
@@ -578,14 +627,16 @@ diagnose() {
     fi
 }
 
+# 重写的 show_ss_tin，使用更健壮的实现
 show_ss_tin() {
-    local port port_pattern line1 line2 printed
+    local port printed=0 line
     if ! require_command ss; then
         log_error "$(t ss_not_found)"
         return 1
     fi
 
     read -r -p "$(t ss_port_prompt)" port
+
     if [[ -z "${port}" ]]; then
         ss -tin state established 2>/dev/null | head -n 60 || true
         return 0
@@ -596,30 +647,34 @@ show_ss_tin() {
         return 1
     fi
 
-    port_pattern=":${port}"
-    printed=0
-    ss -tin state established 2>/dev/null | awk -v p="${port_pattern}" '
-        function print_pair(a, b) { print a; print b; }
-        {
-            line1=$0
-            if (getline line2 <= 0) exit
-            if (index(line1, p) || index(line2, p)) {
-                print_pair(line1, line2)
-                printed++
-                if (printed >= 10) exit
-            }
-        }
-        END { if (printed == 0) exit 2 }
-    ' || true
+    while IFS= read -r line; do
+        if [[ "${line}" =~ :${port}[[:space:]] ]]; then
+            echo "$line"
+            printed=$((printed + 1))
+            if (( printed >= 10 )); then
+                break
+            fi
+        fi
+    done < <(ss -tin state established 2>/dev/null || true)
+
+    return 0
 }
 
 pause_return() {
     read -r -p "$(t press_enter)" _
 }
 
-# 中文说明：启用 BBR，并记录启用前的原始设置，方便后续恢复。
+# 检查网卡 qdisc 是否可以安全替换
+can_replace_qdisc() {
+    local iface_qdisc="${1:?}"
+    # mq 和 noqueue 不应被强制替换
+    [[ "${iface_qdisc}" =~ ^(mq|noqueue)$ ]] && return 1
+    return 0
+}
+
 enable_bbr() {
     local current_qdisc current_congestion primary_iface iface_qdisc
+    local config_lines
 
     if is_bbr_enabled && is_bbr_optimized && [[ -f "${CONFIG_FILE}" ]]; then
         log_info "$(t already_enabled)"
@@ -639,15 +694,23 @@ enable_bbr() {
         return 1
     fi
 
-    mkdir -p "$(dirname "${CONFIG_FILE}")"
-    {
-        echo "#backup default_qdisc=${current_qdisc}"
-        echo "#backup congestion=${current_congestion}"
-        [[ -n "${primary_iface}" ]] && echo "#backup iface=${primary_iface}"
-        [[ -n "${iface_qdisc}" ]] && echo "#backup iface_qdisc=${iface_qdisc}"
-        echo "net.core.default_qdisc = fq"
-        echo "net.ipv4.tcp_congestion_control = bbr"
-    } > "${CONFIG_FILE}"
+    # 构建配置内容（带备份注释）
+    config_lines="#backup default_qdisc=${current_qdisc}"
+    config_lines="${config_lines}"$'\n'"#backup congestion=${current_congestion}"
+    if [[ -n "${primary_iface}" ]]; then
+        config_lines="${config_lines}"$'\n'"#backup iface=${primary_iface}"
+    fi
+    if [[ -n "${iface_qdisc}" ]]; then
+        config_lines="${config_lines}"$'\n'"#backup iface_qdisc=${iface_qdisc}"
+    fi
+    config_lines="${config_lines}"$'\n'"net.core.default_qdisc = fq"
+    config_lines="${config_lines}"$'\n'"net.ipv4.tcp_congestion_control = bbr"
+
+    # 原子写入配置文件
+    if ! atomic_write_config "${config_lines}"; then
+        log_error "$(t sysctl_reload_failed)"
+        return 1
+    fi
 
     if ! reload_sysctl; then
         log_error "$(t sysctl_reload_failed)"
@@ -657,8 +720,9 @@ enable_bbr() {
     sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
     sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
 
-    if [[ -n "${primary_iface}" ]] && require_command tc; then
-        if [[ "${iface_qdisc}" =~ ^(mq|noqueue)$ ]]; then
+    # 只有在可以安全替换时才设置网卡 qdisc
+    if [[ -n "${primary_iface}" ]] && require_command tc && [[ -n "${iface_qdisc}" ]]; then
+        if ! can_replace_qdisc "${iface_qdisc}"; then
             log_warn "$(tf iface_mq_warn "${primary_iface}" "${iface_qdisc}")"
         else
             if ! tc qdisc replace dev "${primary_iface}" root fq >/dev/null 2>&1; then
@@ -678,13 +742,15 @@ enable_bbr() {
     return 1
 }
 
-# 中文说明：关闭 BBR，优先恢复脚本保存的原始值；如果没有备份，则回退到常见默认值。
 disable_bbr() {
-    local old_qdisc old_congestion old_iface old_iface_qdisc legacy_settings legacy_qdisc legacy_congestion current_congestion
+    local old_qdisc old_congestion old_iface old_iface_qdisc
+    local legacy_settings legacy_qdisc legacy_congestion
+    local current_congestion config_exists=0
 
     current_congestion="$(get_current_congestion)"
 
     if [[ -f "${CONFIG_FILE}" ]]; then
+        config_exists=1
         old_qdisc="$(grep -E '^#backup default_qdisc=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
         old_congestion="$(grep -E '^#backup congestion=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
         old_iface="$(grep -E '^#backup iface=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
@@ -704,20 +770,34 @@ disable_bbr() {
         [[ -z "${old_congestion}" ]] && old_congestion="cubic"
         [[ "${old_congestion}" == "bbr" ]] && old_congestion="cubic"
 
-        rm -f "${CONFIG_FILE}"
-
-        sysctl -w "net.core.default_qdisc=${old_qdisc}" >/dev/null 2>&1 || true
-        sysctl -w "net.ipv4.tcp_congestion_control=${old_congestion}" >/dev/null 2>&1 || true
-
-        if [[ -n "${old_iface}" && -n "${old_iface_qdisc}" ]] && require_command tc; then
-            tc qdisc replace dev "${old_iface}" root "${old_iface_qdisc}" >/dev/null 2>&1 || true
+        # 先恢复 sysctl 设置，确保成功后再删除配置文件
+        if ! sysctl -w "net.core.default_qdisc=${old_qdisc}" >/dev/null 2>&1; then
+            log_error "$(t disable_failed)"
+            return 1
         fi
+        if ! sysctl -w "net.ipv4.tcp_congestion_control=${old_congestion}" >/dev/null 2>&1; then
+            log_error "$(t disable_failed)"
+            return 1
+        fi
+
+        # 恢复网卡 qdisc
+        if [[ -n "${old_iface}" ]] && [[ -n "${old_iface_qdisc}" ]] && require_command tc; then
+            if can_replace_qdisc "${old_iface_qdisc}"; then
+                tc qdisc replace dev "${old_iface}" root "${old_iface_qdisc}" >/dev/null 2>&1 || true
+            fi
+        fi
+
+        # sysctl 恢复成功后才能删除配置文件
+        rm -f "${CONFIG_FILE}"
     else
         if [[ "${current_congestion}" != "bbr" ]]; then
             log_warn "$(t no_need_disable)"
             return 0
         fi
-        sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || true
+        sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || {
+            log_error "$(t disable_failed)"
+            return 1
+        }
     fi
 
     remove_systemd_persistence
@@ -734,7 +814,7 @@ disable_bbr() {
 uninstall_bbr() {
     local current_congestion
     current_congestion="$(get_current_congestion)"
-    if [[ -f "${CONFIG_FILE}" || "${current_congestion}" == "bbr" ]]; then
+    if [[ -f "${CONFIG_FILE}" ]] || [[ "${current_congestion}" == "bbr" ]]; then
         disable_bbr || true
     fi
     rm -f "${CONFIG_FILE}" || true
@@ -762,8 +842,8 @@ apply_qdisc() {
         log_info "$(tf apply_qdisc_iface_ok "${primary_iface}" "${iface_qdisc}")"
         return 0
     fi
-    if [[ -n "${iface_qdisc}" ]] && [[ "${iface_qdisc}" =~ ^(mq|noqueue)$ ]]; then
-        log_warn "$(tf iface_mq_warn "${primary_iface}" "${iface_qdisc}")"
+    if [[ -n "${iface_qdisc}" ]] && ! can_replace_qdisc "${iface_qdisc}"; then
+        log_warn "$(tf iface_set_fq_skipped "${primary_iface}" "${iface_qdisc}")"
         return 0
     fi
 
@@ -776,7 +856,6 @@ apply_qdisc() {
     return 0
 }
 
-# 中文说明：显示脚本帮助信息。
 show_help() {
     echo "$(t help_header)"
     echo "  sudo bbr               $(t help_menu)"
@@ -786,16 +865,20 @@ show_help() {
     echo "  sudo bash bbr.sh status    $(t help_status)"
     echo "  sudo bash bbr.sh diagnose  $(t help_diagnose)"
     echo "  sudo bash bbr.sh ss        $(t help_ss)"
+    echo "  sudo bash bbr.sh version   $(t help_version)"
     echo "  sudo bash bbr.sh menu      $(t help_menu)"
     echo "  sudo bash bbr.sh help      $(t help_help)"
 }
 
-# 中文说明：提供简单的交互菜单，便于直接执行。
+show_version() {
+    echo "bbr v${VERSION}"
+}
+
 show_menu() {
     local choice
     while true; do
         echo "=============================="
-        echo "       $(t menu_title)"
+        echo "       $(t menu_title) v${VERSION}"
         echo "=============================="
         echo "1. $(t menu_enable)"
         echo "2. $(t menu_disable)"
@@ -881,6 +964,9 @@ main() {
             ;;
         ss)
             show_ss_tin
+            ;;
+        version|-v|--version)
+            show_version
             ;;
         menu)
             require_root
