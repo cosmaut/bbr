@@ -487,13 +487,21 @@ is_bbr_optimized() {
         return 1
     fi
     current_qdisc="$(get_current_qdisc)"
+    if [[ "${current_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]; then
+        return 0
+    fi
     primary_iface="$(get_primary_interface 2>/dev/null || true)"
     if [[ -n "${primary_iface}" ]] && require_command tc; then
         iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
-        [[ -n "${iface_qdisc}" ]] && [[ "${iface_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]
-        return $?
+        if [[ -n "${iface_qdisc}" ]]; then
+            if [[ "${iface_qdisc}" == "mq" ]]; then
+                return 1
+            fi
+            [[ "${iface_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]
+            return $?
+        fi
     fi
-    [[ "${current_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]
+    return 1
 }
 
 get_kernel_major_minor() {
