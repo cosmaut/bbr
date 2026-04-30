@@ -21,6 +21,16 @@
 curl -fsSL https://raw.githubusercontent.com/cosmaut/bbr/main/install.sh | tr -d '\r' | sudo bash
 ```
 
+维护约束：
+
+- 仓库中的 `.sh` 与 `shasum.txt` 统一使用 `LF` 换行，避免 Windows/AI 修改后产生错误校验值
+- 更新 `bbr.sh` 后，必须基于去除 `\r` 后的发布内容重新生成 `shasum.txt`
+- 推荐生成方式：
+
+```bash
+tr -d '\r' < bbr.sh | sha256sum
+```
+
 ## 使用
 
 安装完成后，直接运行以下命令：
@@ -104,6 +114,7 @@ sudo rm -f /etc/sysctl.d/99-bbr-standalone.conf
 
 - 安装脚本会从 `shasum.txt` 获取 SHA256 校验和，下载后自动验证 `bbr.sh` 的完整性
 - 如校验失败，脚本会中止安装并显示错误信息
+- 维护仓库时，`shasum.txt` 必须与 `LF` 版 `bbr.sh` 保持一致，不能直接使用 Windows `CRLF` 版文件计算哈希
 - 如需手动校验，可执行：
   ```bash
   curl -fsSL https://raw.githubusercontent.com/cosmaut/bbr/main/bbr.sh | sha256sum
