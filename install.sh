@@ -2,7 +2,7 @@
 set -eu
 set -o pipefail 2>/dev/null || true
 
-VERSION="0.0.1"
+VERSION="0.0.2"
 
 SCRIPT_URL="https://raw.githubusercontent.com/cosmaut/bbr/main/bbr.sh"
 INSTALL_PATH="/usr/local/bin/bbr"

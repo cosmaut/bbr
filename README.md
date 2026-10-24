@@ -1,4 +1,4 @@
-# BBR 一键管理脚本 v0.0.1
+# BBR 一键管理脚本 v0.0.2
 
 用于快速启用/关闭 Ubuntu、Debian 系统的 BBR 拥塞控制算法，并提供状态查看与交互菜单。
 
@@ -19,16 +19,6 @@
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/cosmaut/bbr/main/install.sh | tr -d '\r' | sudo bash
-```
-
-维护约束：
-
-- 仓库中的 `.sh` 与 `shasum.txt` 统一使用 `LF` 换行，避免 Windows/AI 修改后产生错误校验值
-- 更新 `bbr.sh` 后，必须基于去除 `\r` 后的发布内容重新生成 `shasum.txt`
-- 推荐生成方式：
-
-```bash
-tr -d '\r' < bbr.sh | sha256sum
 ```
 
 ## 使用
@@ -110,11 +100,42 @@ sudo rm -f /etc/sysctl.d/99-bbr-standalone.conf
 - 为保证可恢复：启用前会备份旧值，关闭时优先恢复备份
 - BBR 配合 `fq` 队列调度以获得更好的 pacing；否则可能回退到 TCP 栈内部 pacing（资源开销更高）
 
+### 🔴 v0.0.2 修复：mq 多队列网卡（云服务器常见）
+
+**问题**：多队列网卡（`qdisc mq` 根，如甲骨云 / AWS / GCP 的 ARM 实例）的实际队列是
+`mq` 根 + 若干 `pfifo_fast` 子队列。旧版本检测到 `mq` 就**直接放弃**设置 fq，
+只写 sysctl ⇒ 结果是 **BBR 开着、但实际队列仍是 `pfifo_fast`** ⇒ BBR 拿不到 pacing，
+遇丢包照样退化成「砍半」行为；且开机持久化单元走同一分支，**每次重启都跳过**。
+
+**修复**：对 `mq` 网卡改为**逐个子队列**替换（`tc qdisc replace dev <if> parent :N root fq`），
+而不是对根队列做 `replace root`（那会破坏 mq 的多队列结构）。
+
+```bash
+# 单队列网卡
+tc qdisc replace dev eth0 root fq
+# mq 多队列网卡（本版新增）
+tc qdisc replace dev enp0s6 parent :1 root fq
+tc qdisc replace dev enp0s6 parent :2 root fq
+```
+
+### 🔴 v0.0.2 修复：状态判定「假绿」
+
+旧版 `is_bbr_optimized()` 先看 `net.core.default_qdisc` 的值，
+而**该值只是 sysctl 里的期望值，对已存在的队列不生效**（设 fq ≠ 实际跑 fq）
+⇒ 在「sysctl 说 fq、实际队列是 pfifo_fast」的机器上会**误报「已优化」**。
+
+新版改为**以网卡上真实存在的队列为准**：
+
+- 根队列是 `mq` ⇒ 逐个检查子队列是否全部为 `fq` / `cake` / `fq_codel`
+- 根队列是其它类型 ⇒ 直接看根队列
+- 仅当探测不到实际网卡队列时，才退化为参考 sysctl
+
+⇒ `bbr status` / `bbr diagnose` 现在会如实报告「未优化」，并给出可执行的修复建议。
+
 ## 安全说明
 
 - 安装脚本会从 `shasum.txt` 获取 SHA256 校验和，下载后自动验证 `bbr.sh` 的完整性
 - 如校验失败，脚本会中止安装并显示错误信息
-- 维护仓库时，`shasum.txt` 必须与 `LF` 版 `bbr.sh` 保持一致，不能直接使用 Windows `CRLF` 版文件计算哈希
 - 如需手动校验，可执行：
   ```bash
   curl -fsSL https://raw.githubusercontent.com/cosmaut/bbr/main/bbr.sh | sha256sum

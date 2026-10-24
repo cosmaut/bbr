@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="0.0.1"
+VERSION="0.0.2"
 
 CONFIG_FILE="/etc/sysctl.d/99-bbr-standalone.conf"
 SYSCTL_CONF="/etc/sysctl.conf"
@@ -130,6 +130,12 @@ t() {
         en:systemd_persist_removed) echo "Removed systemd persistence." ;;
         zh:systemd_persist_remove_failed) echo "移除 systemd 持久化设置失败，请手动检查。" ;;
         en:systemd_persist_remove_failed) echo "Failed to remove systemd persistence; please check manually." ;;
+        zh:iface_set_fq_ok) echo "已为网卡 %s 设置 root fq。" ;;
+        en:iface_set_fq_ok) echo "Set root fq on interface %s." ;;
+        zh:iface_mq_children_set) echo "已为网卡 %s 的 mq 子队列设置 fq（%s 个）。" ;;
+        en:iface_mq_children_set) echo "Set fq on mq child queues of interface %s (%s queues)." ;;
+        zh:iface_mq_children_restore) echo "已把网卡 %s 的 mq 子队列恢复为 %s。" ;;
+        en:iface_mq_children_restore) echo "Restored mq child queues of interface %s to %s." ;;
         zh:apply_qdisc_no_iface) echo "未检测到默认路由网卡，跳过 qdisc 设置。" ;;
         en:apply_qdisc_no_iface) echo "Default route interface not detected; skipping qdisc setup." ;;
         zh:apply_qdisc_tc_missing) echo "未找到 tc 命令（iproute2），跳过 qdisc 设置。" ;;
@@ -464,6 +470,76 @@ get_interface_root_qdisc() {
     return 1
 }
 
+# 列出网卡 mq 根下的子队列，格式为 "qdisc_type handle"（例如 "pfifo_fast :1"）
+# mq 多队列网卡的根队列不能被整体 replace，必须逐个子队列（parent :N）设置 fq。
+# ⚠️ 用空格分隔而不是冒号：handle 本身含冒号（":1"），冒号分隔无法无歧义解析。
+get_interface_qdisc_children() {
+    local iface
+    iface="${1:?}"
+    if ! require_command tc; then
+        return 1
+    fi
+    { tc qdisc show dev "${iface}" 2>/dev/null || true; } \
+        | awk '
+            {
+                handle = ""; qtype = ""
+                for (i = 1; i <= NF; i++) {
+                    if ($i == "parent" && (i + 1) <= NF) { handle = $(i + 1) }
+                    if (qtype == "" && i == 2) { qtype = $i }
+                }
+                if (handle != "" && qtype != "") { print qtype " " handle }
+            }' \
+        | sort -u
+}
+
+# 把网卡队列切到 fq。
+#   · 单队列网卡：tc qdisc replace dev <if> root fq
+#   · mq 多队列网卡：replace root 会破坏 mq 结构，必须逐个子队列替换 parent :N root fq
+# 返回 0 表示已确认处于 fq（或已成功切换）。
+apply_fq_to_interface() {
+    local iface="${1:?}"
+    local root_qdisc="${2:-}"
+    local children child handle child_type applied=0
+
+    if ! require_command tc; then
+        return 1
+    fi
+    if [[ -z "${root_qdisc}" ]]; then
+        root_qdisc="$(get_interface_root_qdisc "${iface}" 2>/dev/null || true)"
+    fi
+
+    if [[ "${root_qdisc}" == "mq" ]]; then
+        children="$(get_interface_qdisc_children "${iface}" 2>/dev/null || true)"
+        if [[ -z "${children}" ]]; then
+            return 1
+        fi
+        while IFS= read -r child; do
+            [[ -z "${child}" ]] && continue
+            child_type="${child%% *}"
+            handle="${child##* }"
+            if [[ "${child_type}" == "fq" ]]; then
+                applied=$((applied + 1))
+                continue
+            fi
+            if tc qdisc replace dev "${iface}" parent "${handle}" root fq >/dev/null 2>&1; then
+                applied=$((applied + 1))
+            else
+                return 1
+            fi
+        done <<< "${children}"
+        [[ "${applied}" -gt 0 ]] || return 1
+        return 0
+    fi
+
+    if [[ "${root_qdisc}" == "fq" ]]; then
+        return 0
+    fi
+    if [[ "${root_qdisc}" == "noqueue" ]]; then
+        return 1
+    fi
+    tc qdisc replace dev "${iface}" root fq >/dev/null 2>&1
+}
+
 is_bbr_supported() {
     local algorithms
     algorithms="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
@@ -483,25 +559,34 @@ is_bbr_enabled() {
 
 is_bbr_optimized() {
     local current_qdisc primary_iface iface_qdisc
+    local children child child_type
     if ! is_bbr_enabled; then
         return 1
     fi
-    current_qdisc="$(get_current_qdisc)"
-    if [[ "${current_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]; then
-        return 0
-    fi
+    # 🔴 必须以「网卡上真实存在的队列」为准：net.core.default_qdisc 只是 sysctl 里的期望值，
+    #    对已存在的队列不生效（设 fq 不等于实际跑 fq）—— 只看它会得到「假绿」。
     primary_iface="$(get_primary_interface 2>/dev/null || true)"
     if [[ -n "${primary_iface}" ]] && require_command tc; then
         iface_qdisc="$(get_interface_root_qdisc "${primary_iface}" 2>/dev/null || true)"
         if [[ -n "${iface_qdisc}" ]]; then
             if [[ "${iface_qdisc}" == "mq" ]]; then
-                return 1
+                # mq 多队列：逐个子队列判定，全部为 fq/cake/fq_codel 才算优化到位
+                children="$(get_interface_qdisc_children "${primary_iface}" 2>/dev/null || true)"
+                [[ -z "${children}" ]] && return 1
+                while IFS= read -r child; do
+                    [[ -z "${child}" ]] && continue
+                    child_type="${child%% *}"
+                    [[ "${child_type}" =~ ^(fq|cake|fq_codel)$ ]] || return 1
+                done <<< "${children}"
+                return 0
             fi
             [[ "${iface_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]
             return $?
         fi
     fi
-    return 1
+    # 仅在探测不到实际网卡队列时，才退化为参考 sysctl 的 default_qdisc
+    current_qdisc="$(get_current_qdisc)"
+    [[ "${current_qdisc}" =~ ^(fq|cake|fq_codel)$ ]]
 }
 
 get_kernel_major_minor() {
@@ -675,14 +760,16 @@ pause_return() {
 # 检查网卡 qdisc 是否可以安全替换
 can_replace_qdisc() {
     local iface_qdisc="${1:?}"
-    # mq 和 noqueue 不应被强制替换
-    [[ "${iface_qdisc}" =~ ^(mq|noqueue)$ ]] && return 1
+    # noqueue（lo / veth 等虚拟网卡）不应被强制替换。
+    # mq 多队列不再直接放弃：改由 apply_fq_to_interface 逐个子队列设置 fq ——
+    # 「只设 sysctl 而不切实际 qdisc」正是 BBR 丢失 pacing、遇丢包退化的根因。
+    [[ "${iface_qdisc}" == "noqueue" ]] && return 1
     return 0
 }
 
 enable_bbr() {
     local current_qdisc current_congestion primary_iface iface_qdisc
-    local config_lines
+    local config_lines child_count child_types
 
     if is_bbr_enabled && is_bbr_optimized && [[ -f "${CONFIG_FILE}" ]]; then
         log_info "$(t already_enabled)"
@@ -711,6 +798,10 @@ enable_bbr() {
     if [[ -n "${iface_qdisc}" ]]; then
         config_lines="${config_lines}"$'\n'"#backup iface_qdisc=${iface_qdisc}"
     fi
+    if [[ -n "${primary_iface}" ]] && [[ "${iface_qdisc}" == "mq" ]]; then
+        child_types="$(get_interface_qdisc_children "${primary_iface}" 2>/dev/null | cut -d' ' -f1 | tr '\n' ',' | sed 's/,$//')"
+        [[ -n "${child_types}" ]] && config_lines="${config_lines}"$'\n'"#backup iface_children=${child_types}"
+    fi
     config_lines="${config_lines}"$'\n'"net.core.default_qdisc = fq"
     config_lines="${config_lines}"$'\n'"net.ipv4.tcp_congestion_control = bbr"
 
@@ -728,14 +819,20 @@ enable_bbr() {
     sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
     sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
 
-    # 只有在可以安全替换时才设置网卡 qdisc
+    # 设置网卡 qdisc（mq 多队列走子队列路径：逐个 parent :N 设置 fq，
+    # 对 root 做 replace 会破坏 mq 结构；只设 sysctl 则实际队列不变，BBR 拿不到 pacing）
     if [[ -n "${primary_iface}" ]] && require_command tc && [[ -n "${iface_qdisc}" ]]; then
         if ! can_replace_qdisc "${iface_qdisc}"; then
             log_warn "$(tf iface_mq_warn "${primary_iface}" "${iface_qdisc}")"
-        else
-            if ! tc qdisc replace dev "${primary_iface}" root fq >/dev/null 2>&1; then
-                log_warn "$(tf iface_set_fq_warn "${primary_iface}")"
+        elif apply_fq_to_interface "${primary_iface}" "${iface_qdisc}"; then
+            if [[ "${iface_qdisc}" == "mq" ]]; then
+                child_count="$(get_interface_qdisc_children "${primary_iface}" 2>/dev/null | wc -l | tr -d ' ')"
+                log_info "$(tf iface_mq_children_set "${primary_iface}" "${child_count}")"
+            else
+                log_info "$(tf iface_set_fq_ok "${primary_iface}")"
             fi
+        else
+            log_warn "$(tf iface_set_fq_warn "${primary_iface}")"
         fi
     fi
 
@@ -751,9 +848,10 @@ enable_bbr() {
 }
 
 disable_bbr() {
-    local old_qdisc old_congestion old_iface old_iface_qdisc
+    local old_qdisc old_congestion old_iface old_iface_qdisc old_iface_children
     local legacy_settings legacy_qdisc legacy_congestion
     local current_congestion config_exists=0
+    local restore_type children child handle
 
     current_congestion="$(get_current_congestion)"
 
@@ -763,6 +861,7 @@ disable_bbr() {
         old_congestion="$(grep -E '^#backup congestion=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
         old_iface="$(grep -E '^#backup iface=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
         old_iface_qdisc="$(grep -E '^#backup iface_qdisc=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
+        old_iface_children="$(grep -E '^#backup iface_children=' "${CONFIG_FILE}" 2>/dev/null | head -n 1 | cut -d'=' -f2- || true)"
 
         if [[ -z "${old_qdisc}" || -z "${old_congestion}" ]]; then
             legacy_settings="$(head -n 1 "${CONFIG_FILE}" 2>/dev/null | tr -d '# ' || true)"
@@ -790,7 +889,18 @@ disable_bbr() {
 
         # 恢复网卡 qdisc
         if [[ -n "${old_iface}" ]] && [[ -n "${old_iface_qdisc}" ]] && require_command tc; then
-            if can_replace_qdisc "${old_iface_qdisc}"; then
+            if [[ "${old_iface_qdisc}" == "mq" ]]; then
+                # mq 子队列恢复为原类型（默认 pfifo_fast；bands/priomap 会回到内核默认值）
+                restore_type="${old_iface_children%%,*}"
+                [[ -z "${restore_type}" ]] && restore_type="pfifo_fast"
+                children="$(get_interface_qdisc_children "${old_iface}" 2>/dev/null || true)"
+                while IFS= read -r child; do
+                    [[ -z "${child}" ]] && continue
+                    handle="${child##* }"
+                    tc qdisc replace dev "${old_iface}" parent "${handle}" root "${restore_type}" >/dev/null 2>&1 || true
+                done <<< "${children}"
+                log_info "$(tf iface_mq_children_restore "${old_iface}" "${restore_type}")"
+            elif can_replace_qdisc "${old_iface_qdisc}"; then
                 tc qdisc replace dev "${old_iface}" root "${old_iface_qdisc}" >/dev/null 2>&1 || true
             fi
         fi
@@ -855,7 +965,8 @@ apply_qdisc() {
         return 0
     fi
 
-    if tc qdisc replace dev "${primary_iface}" root fq >/dev/null 2>&1; then
+    # mq 多队列：逐个子队列设置 fq（parent :N）；单队列：replace root fq
+    if apply_fq_to_interface "${primary_iface}" "${iface_qdisc}"; then
         log_info "$(tf apply_qdisc_iface_set "${primary_iface}")"
         return 0
     fi
