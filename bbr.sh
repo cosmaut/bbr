@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="0.0.2"
+VERSION="0.0.3"
 
 CONFIG_FILE="/etc/sysctl.d/99-bbr-standalone.conf"
 SYSCTL_CONF="/etc/sysctl.conf"
@@ -132,8 +132,8 @@ t() {
         en:systemd_persist_remove_failed) echo "Failed to remove systemd persistence; please check manually." ;;
         zh:iface_set_fq_ok) echo "已为网卡 %s 设置 root fq。" ;;
         en:iface_set_fq_ok) echo "Set root fq on interface %s." ;;
-        zh:iface_mq_children_set) echo "已为网卡 %s 的 mq 子队列设置 fq（%s 个）。" ;;
-        en:iface_mq_children_set) echo "Set fq on mq child queues of interface %s (%s queues)." ;;
+        zh:iface_mq_children_set) echo "已重建网卡 %s 的 mq 根，子队列按 default_qdisc 重新创建（%s 个）。" ;;
+        en:iface_mq_children_set) echo "Rebuilt mq root on interface %s; child queues recreated from default_qdisc (%s queues)." ;;
         zh:iface_mq_children_restore) echo "已把网卡 %s 的 mq 子队列恢复为 %s。" ;;
         en:iface_mq_children_restore) echo "Restored mq child queues of interface %s to %s." ;;
         zh:apply_qdisc_no_iface) echo "未检测到默认路由网卡，跳过 qdisc 设置。" ;;
@@ -494,7 +494,13 @@ get_interface_qdisc_children() {
 
 # 把网卡队列切到 fq。
 #   · 单队列网卡：tc qdisc replace dev <if> root fq
-#   · mq 多队列网卡：replace root 会破坏 mq 结构，必须逐个子队列替换 parent :N root fq
+#   · mq 多队列网卡：**不能**对子队列单独 replace —— mq 的 classid 在内核里不可寻址
+#     （实测 iproute2-5.15：parent :1 / 1:1 / 0:1 全部报
+#      "Failed to find qdisc with specified classid"；
+#      而 `parent :N root fq` 会报 ""root" is duplicate parent ID"）。
+#     正解 = **重建 mq 根**：内核会按当前 net.core.default_qdisc 重新创建每个子队列，
+#     于是 default_qdisc=fq 时子队列自动变成 fq。
+#       tc qdisc replace dev <if> root handle 1: mq
 # 返回 0 表示已确认处于 fq（或已成功切换）。
 apply_fq_to_interface() {
     local iface="${1:?}"
@@ -509,25 +515,33 @@ apply_fq_to_interface() {
     fi
 
     if [[ "${root_qdisc}" == "mq" ]]; then
+        # 已经是 fq/cake/fq_codel 就不要重建（重建会瞬时重置队列、打断在途包）
         children="$(get_interface_qdisc_children "${iface}" 2>/dev/null || true)"
-        if [[ -z "${children}" ]]; then
+        if [[ -n "${children}" ]]; then
+            applied=1
+            while IFS= read -r child; do
+                [[ -z "${child}" ]] && continue
+                child_type="${child%% *}"
+                [[ "${child_type}" =~ ^(fq|cake|fq_codel)$ ]] || { applied=0; break; }
+            done <<< "${children}"
+            if [[ "${applied}" -eq 1 ]]; then
+                return 0
+            fi
+        fi
+
+        # 重建 mq 根 —— 子队列按当前 net.core.default_qdisc 重新创建
+        if ! tc qdisc replace dev "${iface}" root handle 1: mq >/dev/null 2>&1; then
             return 1
         fi
+
+        # 复核：子队列是否都已是 fq/cake/fq_codel
+        children="$(get_interface_qdisc_children "${iface}" 2>/dev/null || true)"
+        [[ -z "${children}" ]] && return 1
         while IFS= read -r child; do
             [[ -z "${child}" ]] && continue
             child_type="${child%% *}"
-            handle="${child##* }"
-            if [[ "${child_type}" == "fq" ]]; then
-                applied=$((applied + 1))
-                continue
-            fi
-            if tc qdisc replace dev "${iface}" parent "${handle}" root fq >/dev/null 2>&1; then
-                applied=$((applied + 1))
-            else
-                return 1
-            fi
+            [[ "${child_type}" =~ ^(fq|cake|fq_codel)$ ]] || return 1
         done <<< "${children}"
-        [[ "${applied}" -gt 0 ]] || return 1
         return 0
     fi
 
@@ -894,11 +908,10 @@ disable_bbr() {
                 restore_type="${old_iface_children%%,*}"
                 [[ -z "${restore_type}" ]] && restore_type="pfifo_fast"
                 children="$(get_interface_qdisc_children "${old_iface}" 2>/dev/null || true)"
-                while IFS= read -r child; do
-                    [[ -z "${child}" ]] && continue
-                    handle="${child##* }"
-                    tc qdisc replace dev "${old_iface}" parent "${handle}" root "${restore_type}" >/dev/null 2>&1 || true
-                done <<< "${children}"
+                # mq 子队列恢复为原类型：default_qdisc 已在上一步恢复，
+                # 重建 mq 根即可让内核按它重新创建子队列
+                # （对子队列单独 replace 不可行 —— mq classid 在内核里不可寻址）
+                tc qdisc replace dev "${old_iface}" root handle 1: mq >/dev/null 2>&1 || true
                 log_info "$(tf iface_mq_children_restore "${old_iface}" "${restore_type}")"
             elif can_replace_qdisc "${old_iface_qdisc}"; then
                 tc qdisc replace dev "${old_iface}" root "${old_iface_qdisc}" >/dev/null 2>&1 || true

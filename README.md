@@ -100,23 +100,39 @@ sudo rm -f /etc/sysctl.d/99-bbr-standalone.conf
 - 为保证可恢复：启用前会备份旧值，关闭时优先恢复备份
 - BBR 配合 `fq` 队列调度以获得更好的 pacing；否则可能回退到 TCP 栈内部 pacing（资源开销更高）
 
-### 🔴 v0.0.2 修复：mq 多队列网卡（云服务器常见）
+### 🔴 v0.0.2 / v0.0.3 修复：mq 多队列网卡（云服务器常见）
 
 **问题**：多队列网卡（`qdisc mq` 根，如甲骨云 / AWS / GCP 的 ARM 实例）的实际队列是
-`mq` 根 + 若干 `pfifo_fast` 子队列。旧版本检测到 `mq` 就**直接放弃**设置 fq，
+`mq` 根 + 若干 `pfifo_fast` 子队列。v0.0.1 检测到 `mq` 就**直接放弃**设置 fq，
 只写 sysctl ⇒ 结果是 **BBR 开着、但实际队列仍是 `pfifo_fast`** ⇒ BBR 拿不到 pacing，
 遇丢包照样退化成「砍半」行为；且开机持久化单元走同一分支，**每次重启都跳过**。
 
-**修复**：对 `mq` 网卡改为**逐个子队列**替换（`tc qdisc replace dev <if> parent :N root fq`），
-而不是对根队列做 `replace root`（那会破坏 mq 的多队列结构）。
+**v0.0.3 的正解（已在真机 Oracle ARM 6.8.0-1062 / iproute2-5.15 上实测通过）**：
 
 ```bash
 # 单队列网卡
 tc qdisc replace dev eth0 root fq
-# mq 多队列网卡（本版新增）
-tc qdisc replace dev enp0s6 parent :1 root fq
-tc qdisc replace dev enp0s6 parent :2 root fq
+# mq 多队列网卡：重建 mq 根 —— 内核会按当前 net.core.default_qdisc 重新创建每个子队列
+tc qdisc replace dev enp0s6 root handle 1: mq
 ```
+
+执行后子队列自动变为 fq：
+
+```
+qdisc mq 1: root
+qdisc fq 0: parent 1:2 limit 10000p flow_limit 100p buckets 1024 ...
+qdisc fq 0: parent 1:1 limit 10000p flow_limit 100p buckets 1024 ...
+```
+
+⚠️ **v0.0.2 曾用的「逐个子队列 parent :N」写法在真机上不可用**，实测两种报错：
+
+| 写法 | 真机报错 | 原因 |
+|---|---|---|
+| `tc qdisc replace dev X parent :1 root fq` | `Error: "root" is duplicate parent ID` | 带 `parent` 时 `root` 被解析成第二个 parent ID |
+| `tc qdisc replace dev X parent :1 handle 0: fq`<br>`tc qdisc replace dev X parent 1:1 handle 0: fq`<br>`tc qdisc replace dev X parent 0:1 ...` | `Error: Failed to find qdisc with specified classid.` | **mq 的 classid 在内核里不可寻址**（`tc class show` 能看到 `class mq :1 root`，但按它操作找不到） |
+
+⇒ 所以 mq 网卡**只能重建根队列**，不能逐个子队列替换。
+（代价：重建会瞬时重置队列、打断在途包 ⇒ 脚本会先检查子队列是否已是 fq，是则不动。）
 
 ### 🔴 v0.0.2 修复：状态判定「假绿」
 
